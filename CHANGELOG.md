@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Shipped artifact renamed from `code` to `index.html` so GitHub Pages (and any
+  other static host) serves the game at the root URL with no `/code` suffix.
+  `build.mjs` now writes to `index.html`; all docs updated to match.
+
 ### Added
 - Repository documentation: README, LICENSE, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT,
   SECURITY, SUPPORT, CREDITS, CONTROLS, BUILD, MODDING, ASSETS_LICENSE, THIRD_PARTY_NOTICES.

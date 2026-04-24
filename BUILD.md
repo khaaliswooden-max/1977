@@ -1,19 +1,19 @@
 # Build & Run
 
 *1977 — Aircraft Warfare* ships as a single HTML file players can open
-directly. Since **Phase 1** of the enhancement track, that file (`code`) is
-**auto-generated** from `src/game.html` by a tiny Node script (`build.mjs`).
+directly. Since **Phase 1** of the enhancement track, that file (`index.html`)
+is **auto-generated** from `src/game.html` by a tiny Node script (`build.mjs`).
 There is still no npm install, no bundler, and no network at build time.
 
 ## Source vs. shipped artifact
 
-| Path             | Role                                                      |
-| ---------------- | --------------------------------------------------------- |
-| `src/game.html`  | **Editable source.** Contains `/* INLINE:... */` markers. |
-| `build.mjs`      | Node 18+ script that resolves markers and emits `code`.   |
-| `code`           | **Shipped artifact.** Auto-generated; do not hand-edit.   |
-| `assets/**`      | SFX params, music, sprites — inlined as data URIs.        |
-| `vendor/**`      | Third-party libs — inlined as JS by `INLINE:FILE`.        |
+| Path             | Role                                                          |
+| ---------------- | ------------------------------------------------------------- |
+| `src/game.html`  | **Editable source.** Contains `/* INLINE:... */` markers.     |
+| `build.mjs`      | Node 18+ script that resolves markers and emits `index.html`. |
+| `index.html`     | **Shipped artifact.** Auto-generated; do not hand-edit.       |
+| `assets/**`      | SFX params, music, sprites — inlined as data URIs.            |
+| `vendor/**`      | Third-party libs — inlined as JS by `INLINE:FILE`.            |
 
 ### Rebuilding
 
@@ -51,11 +51,11 @@ Phases 2–5 will add markers for `vendor/sfxr.js`, `vendor/Proton`,
 
 ```bash
 # Linux
-xdg-open code
+xdg-open index.html
 # macOS
-open code
+open index.html
 # Windows (PowerShell)
-start code
+start index.html
 ```
 
 This works, but some browsers restrict `file://` URLs (no touch emulation over LAN, stricter CORS for any future asset loads). Prefer Option 2.
@@ -64,7 +64,7 @@ This works, but some browsers restrict `file://` URLs (no touch emulation over L
 
 ```bash
 python3 -m http.server 8000
-# then visit http://localhost:8000/code
+# then visit http://localhost:8000/
 ```
 
 Any static server works: `npx serve .`, `caddy file-server`, `busybox httpd -p 8000`, etc.
@@ -73,33 +73,23 @@ Any static server works: `npx serve .`, `caddy file-server`, `busybox httpd -p 8
 
 1. Start a static server as in Option 2.
 2. Find your LAN IP (`ip a` on Linux, `ifconfig` on macOS, `ipconfig` on Windows).
-3. On the phone, open `http://<your-lan-ip>:8000/code`.
+3. On the phone, open `http://<your-lan-ip>:8000/`.
 4. Both machines must be on the same Wi-Fi network; your firewall must allow inbound `:8000`.
-
-## File naming
-
-The game file is called `code` (no extension) for historical reasons. If you prefer `index.html`:
-
-```bash
-mv code index.html
-```
-
-All documentation refers to it as `code`; update references in your fork if you rename it.
 
 ## "Building" for distribution
 
-Because it's one file, "building" means copying `code` somewhere. Options:
+Because it's one file, "building" means copying `index.html` somewhere. Options:
 
-- **GitHub Pages** — push to `gh-pages` (or enable Pages on `main` with `/ (root)`), then the game is live at `https://<user>.github.io/1977/code`. Rename to `index.html` first for a clean URL.
-- **itch.io** — zip the single file and upload as an HTML5 game.
-- **Neocities / Tilde / any static host** — upload the file directly.
+- **GitHub Pages** — push to `gh-pages` (or enable Pages on `main` with `/ (root)`), then the game is live at `https://<user>.github.io/1977/`.
+- **itch.io** — zip `index.html` and upload as an HTML5 game.
+- **Neocities / Tilde / any static host** — upload `index.html` directly.
 
 ## Offline-first
 
 The game uses no network at runtime **except** for loading Google Fonts on first visit. To make it truly offline:
 
 1. Download the two `.woff2` files from Google Fonts.
-2. Place them next to `code`.
+2. Place them next to `index.html`.
 3. Replace the `@import url('https://fonts.googleapis.com/...')` line in the `<style>` block with local `@font-face` declarations.
 4. Update [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) to note that fonts are now bundled, and add the [OFL license text](https://openfontlicense.org/).
 

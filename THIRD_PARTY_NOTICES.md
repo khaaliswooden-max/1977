@@ -66,8 +66,8 @@ The game source code itself does not bundle any third-party runtime libraries. E
 ### canvas-confetti
 
 - **Use**: reference for celebration bursts. The `Confetti` module in
-  `code` is a ~40-line DIY implementation tuned for our 480×640 canvas;
-  the full library is not inlined to keep `code` small.
+  `index.html` is a ~40-line DIY implementation tuned for our 480×640
+  canvas; the full library is not inlined to keep `index.html` small.
 - **Runtime**: canvas-confetti is **not bundled**.
 - **URL**: `vendor/canvas-confetti/README.md`.
 - **License**: ISC. See `vendor/canvas-confetti/LICENSE`.

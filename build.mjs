@@ -2,7 +2,7 @@
 // build.mjs — single-file build for 1977.
 // Reads src/game.html (the editable source), resolves INLINE markers by
 // pasting file contents or encoding assets as base64 data URIs, and writes
-// the result to `code` (the shipped artifact players open in a browser).
+// the result to `index.html` (the shipped artifact players open in a browser).
 //
 // Requires Node 18+. No npm install. No network.
 //
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC  = resolve(ROOT, 'src/game.html');
-const OUT  = resolve(ROOT, 'code');
+const OUT  = resolve(ROOT, 'index.html');
 
 const MIME = {
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg',
