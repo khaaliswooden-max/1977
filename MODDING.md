@@ -5,13 +5,13 @@
 ## Getting set up
 
 1. Fork the repository on GitHub.
-2. Clone your fork and open `code` in any text editor.
-3. Serve it locally: `python3 -m http.server 8000` → open `http://localhost:8000/code`.
-4. Reload the browser after each edit. There's no build step.
+2. Clone your fork and open `src/game.html` in any text editor (or edit `index.html` directly for quick experiments — but prefer editing the source).
+3. Serve it locally: `python3 -m http.server 8000` → open `http://localhost:8000/`.
+4. Run `node build.mjs` to rebuild `index.html`, then reload the browser.
 
 ## Where to change things
 
-All numbers below refer to objects defined near the top of the `<script>` block in `code`.
+All numbers below refer to objects defined near the top of the `<script>` block in `src/game.html`.
 
 ### Difficulty tuning
 

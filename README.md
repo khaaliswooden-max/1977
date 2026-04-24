@@ -20,16 +20,16 @@ git clone https://github.com/khaaliswooden-max/1977.git
 cd 1977
 # rename on first use if you prefer (optional)
 # mv code index.html
-xdg-open code   # Linux
-open code       # macOS
-start code      # Windows
+xdg-open index.html   # Linux
+open index.html       # macOS
+start index.html      # Windows
 ```
 
 Or serve it locally (recommended for mobile testing over LAN):
 
 ```bash
 python3 -m http.server 8000
-# then visit http://localhost:8000/code
+# then visit http://localhost:8000/
 ```
 
 No build step, no npm install, no toolchain.
@@ -57,7 +57,7 @@ See [CONTROLS.md](CONTROLS.md) for the full reference.
 
 ```
 .
-├── code                # the game (single HTML file)
+├── index.html          # the game (single HTML file, built from src/)
 ├── README.md
 ├── LICENSE             # code license
 ├── ASSETS_LICENSE.md   # art / audio license (if/when assets are added)
