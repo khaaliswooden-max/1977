@@ -24,6 +24,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Script reorganized into labelled sections (CONFIG, AUDIO, RENDER,
     INPUT, ENTITIES, UI, ENGINE) so later phases have clear drop-in points.
   - Build version stamp emitted to the JS console on boot.
+- **Phase 5 — player features.**
+  - Gamepad support via the native HTML5 Gamepad API (vendor
+    gamecontroller.js / joypad.js credited as references). Left stick
+    + D-pad = movement, A/RT = fire, B/X = bomb. Haptic rumble on bomb
+    (0.9, 300ms) and on taking damage (1.0, 400ms). Toasts on connect
+    and disconnect.
+  - Combo system: chain enemy kills within ~2s to raise a score
+    multiplier up to x4. On-screen chain counter + decay bar above the
+    top bar. Combo resets on player damage.
+  - Weapon variants: STANDARD (existing, now 5 levels), SPREAD (wide
+    fan that grows with level), LASER (piercing vertical beams — SHOT
+    pickups become far more powerful), HOMING (bullets that track the
+    nearest enemy / boss). New `WEAPON` power-up rolls a random type
+    different from the current one. HUD shows the current weapon's
+    4-letter abbreviation next to the level.
+  - 2P revive: when a co-op player runs out of lives their wreck
+    persists for 15s. The surviving teammate can stand within 32px of
+    it for 3s to revive them with 1 life (progress ring + sparkles).
+    Game-over is suppressed while a wreck is still revivable.
+  - Key rebinding: new `KEY BINDINGS` screen under Options. Highlight
+    an action, press Enter, then press any key — that key becomes the
+    binding. Key autorepeat is guarded so holding Enter doesn't
+    accidentally bind to Enter. `RESET BINDINGS` restores defaults.
+  - `DEFAULT_BINDINGS` + `Config.bindings` replace the previous
+    hard-coded input checks; persistence is seamless with Phase 4
+    settings storage.
 - **Phase 4 — UX / UI.**
   - Main menu extended with `OPTIONS` and `HIGH SCORES` entries; vendor
     version stamp visible at the bottom.

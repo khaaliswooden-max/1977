@@ -80,6 +80,41 @@ The game source code itself does not bundle any third-party runtime libraries. E
 - **URL**: `vendor/particles.js-bg/README.md`.
 - **License**: MIT. See `vendor/particles.js-bg/LICENSE`.
 
+### gamecontroller.js
+
+- **Use**: reference for the Gamepad API integration approach (standard
+  button layout, dual-rumble haptics). `code` uses the native browser
+  Gamepad API directly — no library inlined.
+- **Runtime**: gamecontroller.js is **not bundled**.
+- **URL**: `vendor/gamecontroller.js/readme.md`.
+- **License**: MIT. See `vendor/gamecontroller.js/license.md`.
+
+### joypad.js
+
+- **Use**: secondary reference for the Gamepad API and standard button
+  index mapping. `code` uses the native browser Gamepad API directly.
+- **Runtime**: joypad.js is **not bundled**.
+- **URL**: `vendor/joypad.js/README.md`.
+- **License**: MIT. See `vendor/joypad.js/LICENSE`.
+
+### nipplejs
+
+- **Use**: not integrated. The existing inline touch zone implementation
+  was retained for Phase 5; nipplejs stays a reference for a future
+  polish pass if the current scheme needs replacing.
+- **Runtime**: nipplejs is **not bundled**.
+- **URL**: `vendor/nipplejs/README.md`.
+- **License**: MIT. See `vendor/nipplejs/LICENSE`.
+
+### bullethell
+
+- **Use**: reference for enemy bullet patterns (aimed, ring burst,
+  spiral). Phase 3/5 bosses and enemies use hand-coded variants of
+  these shapes; no code was copied.
+- **Runtime**: bullethell is **not bundled**.
+- **URL**: `vendor/bullethell/README.md`.
+- **License**: see `vendor/bullethell/LICENSE`.
+
 ## Bundled assets
 
 *(No third-party sprites or audio samples are bundled in `code`.

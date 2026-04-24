@@ -63,7 +63,7 @@
    SECTION: BUILD METADATA
    ═══════════════════════════════════════════════════════════════════════════ */
 /* INLINE:VERSION */
-const BUILD_VERSION = '0.2.0-phase1+2026-04-24T19:38:20Z';
+const BUILD_VERSION = '0.2.0-phase1+2026-04-24T19:47:09Z';
 /* /INLINE */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -72,7 +72,7 @@ const BUILD_VERSION = '0.2.0-phase1+2026-04-24T19:38:20Z';
 const W = 480, H = 640;
 const GS = {
   MENU:0, DIFF:1, MODE:2, PLAYING:3, PAUSED:4, LEVEL_CLEAR:5, GAMEOVER:6,
-  VICTORY:7, OPTIONS:8, HIGHSCORES:9, NAME_ENTRY:10,
+  VICTORY:7, OPTIONS:8, HIGHSCORES:9, NAME_ENTRY:10, BINDINGS:11,
 };
 const DIFF_CFG = [
   { name:'NOVICE',    color:'#44FF88', lives:5, enemySpd:0.7, fireRate:0.6, bossHp:1.0, shield:true  },
@@ -96,6 +96,7 @@ const CONFIG_DEFAULTS = Object.freeze({
   volSfx:    0.9,
   colorblind: 'off',
   highScores: [],
+  bindings: null,         // null = use DEFAULT_BINDINGS; set via Options > KEY BINDINGS
 });
 
 const Config = (() => {
@@ -938,11 +939,80 @@ function thruster(x, y, color) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SECTION: INPUT (Phase 5 adds gamepad + nipplejs touch)
+   SECTION: INPUT
    ═══════════════════════════════════════════════════════════════════════════ */
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.code]=true; e.preventDefault(); });
+// Binding capture: when set, the next keydown is recorded as the binding
+// for capturingFor = { player:'p1'|'p2', action:'left'|... } and cleared.
+let capturingFor = null;
+window.addEventListener('keydown', e => {
+  if (capturingFor) {
+    e.preventDefault();
+    // Ignore key autorepeat (e.g. Enter held down from the confirm press).
+    if (e.repeat) return;
+    if (e.code !== 'Escape') {
+      const bindings = JSON.parse(JSON.stringify(getBindings()));
+      bindings[capturingFor.player][capturingFor.action] = [e.code];
+      Config.set('bindings', bindings);
+      Toasts.push('BOUND ' + capturingFor.action.toUpperCase() + ' → ' + e.code, '#88CCFF');
+    }
+    capturingFor = null;
+    return;
+  }
+  keys[e.code] = true; e.preventDefault();
+});
 window.addEventListener('keyup',   e => { keys[e.code]=false; });
+
+// ── Gamepad (standard HTML5 Gamepad API; no vendor inline needed) ─────────
+const Gamepad = (() => {
+  let pads = [];
+  function poll() {
+    pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  }
+  function state(slot) {
+    const p = pads[slot];
+    if (!p) return null;
+    const dz = 0.18;
+    const axX = Math.abs(p.axes[0]) > dz ? p.axes[0] : 0;
+    const axY = Math.abs(p.axes[1]) > dz ? p.axes[1] : 0;
+    const b = p.buttons;
+    const dl = b[14] && b[14].pressed, dr = b[15] && b[15].pressed;
+    const du = b[12] && b[12].pressed, dd = b[13] && b[13].pressed;
+    return {
+      dx: axX + (dr?1:0) - (dl?1:0),
+      dy: axY + (dd?1:0) - (du?1:0),
+      fire: !!((b[0]&&b[0].pressed) || (b[7]&&b[7].pressed)),
+      bomb: !!((b[1]&&b[1].pressed) || (b[2]&&b[2].pressed)),
+      start: !!(b[9] && b[9].pressed),
+    };
+  }
+  function rumble(slot, intensity, ms) {
+    const p = pads[slot];
+    if (!p || !p.vibrationActuator) return;
+    try {
+      p.vibrationActuator.playEffect('dual-rumble', {
+        duration: ms, startDelay: 0,
+        strongMagnitude: intensity,
+        weakMagnitude: intensity * 0.7,
+      });
+    } catch (_) {}
+  }
+  function connectedCount() { return pads.length; }
+  return { poll, state, rumble, connectedCount };
+})();
+window.addEventListener('gamepadconnected',    () => { Toasts.push('GAMEPAD CONNECTED', '#44FF88'); });
+window.addEventListener('gamepaddisconnected', () => { Toasts.push('GAMEPAD DISCONNECTED', '#FFAA88'); });
+
+// ── Key bindings (overlay onto defaults, persisted via Config) ────────────
+const DEFAULT_BINDINGS = Object.freeze({
+  p1: { left:['KeyA','ArrowLeft'], right:['KeyD','ArrowRight'], up:['KeyW','ArrowUp'], down:['KeyS','ArrowDown'], fire:['Space','KeyZ'], bomb:['KeyX'] },
+  p2: { left:['KeyJ','Numpad4'],   right:['KeyL','Numpad6'],    up:['KeyI','Numpad8'], down:['KeyK','Numpad5'],   fire:['Enter','NumpadEnter','KeyM'], bomb:['KeyN'] },
+});
+function getBindings() {
+  const saved = Config.get('bindings');
+  return saved && saved.p1 && saved.p2 ? saved : DEFAULT_BINDINGS;
+}
+function anyKey(codes) { return codes.some(c => keys[c]); }
 
 // Touch input state
 const touch = {
@@ -1010,6 +1080,25 @@ class Bullet {
   update() {
     if (this._px === undefined) { this._px = this.x; this._py = this.y; }
     else { this._px = this.x; this._py = this.y; }
+    if (this.homing) {
+      // Find nearest live enemy; steer vx,vy toward it (bounded turn rate).
+      let best = null, bestD = 260;
+      const targets = game.enemies.filter(e => !e.dead);
+      if (game.boss && !game.boss.dead && !game.boss.entering) targets.push(game.boss);
+      for (const t of targets) {
+        const d = Math.hypot(t.x - this.x, t.y - this.y);
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      if (best) {
+        const tx = best.x - this.x, ty = best.y - this.y;
+        const td = Math.hypot(tx, ty) || 1;
+        const desiredVx = tx / td * 6, desiredVy = ty / td * 6;
+        this.vx += (desiredVx - this.vx) * 0.14;
+        this.vy += (desiredVy - this.vy) * 0.14;
+      } else {
+        this.vy = Math.min(this.vy, -6);
+      }
+    }
     this.x+=this.vx; this.y+=this.vy;
     if(this.y<-20||this.y>H+20||this.x<-20||this.x>W+20) this.dead=true;
   }
@@ -1045,11 +1134,13 @@ class Bullet {
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTION: ENTITIES — POWER-UP
    ═══════════════════════════════════════════════════════════════════════════ */
-const PU_TYPES = ['SHOT','SPEED','SHIELD','BOMB'];
+// SHOT raises weapon level 1..5; WEAPON rolls a new weapon type.
+const PU_TYPES = ['SHOT','SPEED','SHIELD','BOMB','WEAPON'];
+const PU_LABEL = { SHOT:'S', SPEED:'P', SHIELD:'H', BOMB:'B', WEAPON:'W' };
 class PowerUp {
   constructor(x,y,type) {
     this.x=x; this.y=y; this.type=type; this.dead=false; this.t=0;
-    this.colors = { SHOT:'#FF8800', SPEED:'#00FFFF', SHIELD:'#4488FF', BOMB:'#FF4466' };
+    this.colors = { SHOT:'#FF8800', SPEED:'#00FFFF', SHIELD:'#4488FF', BOMB:'#FF4466', WEAPON:'#FF88EE' };
   }
   update() { this.y += 1.2; this.t++; if(this.y>H+20) this.dead=true; }
   draw(ctx) {
@@ -1060,7 +1151,7 @@ class PowerUp {
     ctx.strokeStyle=c; ctx.lineWidth=2;
     ctx.beginPath(); ctx.arc(this.x,this.y,12+pulse,0,Math.PI*2); ctx.stroke();
     ctx.fillStyle=c; ctx.font='bold 9px Share Tech Mono'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(this.type[0], this.x, this.y);
+    ctx.fillText(PU_LABEL[this.type] || '?', this.x, this.y);
     ctx.restore();
   }
 }
@@ -1074,32 +1165,32 @@ class Player {
     this.w=24; this.h=28; this.dead=false; this.invTime=0;
     this.shotLevel=1; this.speed=3.2; this.hasShield=false; this.shieldTime=0;
     this.bombs=3; this.fireTimer=0; this.fireRate=8;
+    this.weapon='STANDARD';    // 'STANDARD' | 'SPREAD' | 'LASER' | 'HOMING'
     this.score=0; this.t=0; this.thrusterT=0;
     this.lives = DIFF_CFG[game.diff].lives;
     this.dying=0; this.respawnTimer=0; this.active=true;
   }
   getInput() {
-    const spd = this.speed;
+    const bindings = getBindings();
+    const slot = this.pid === 1 ? 'p1' : 'p2';
+    const map = bindings[slot];
     let dx=0, dy=0, fire=false, bomb=false;
-    if(this.pid===1) {
-      if(keys['KeyA']||keys['ArrowLeft']) dx=-1;
-      if(keys['KeyD']||keys['ArrowRight']) dx=1;
-      if(keys['KeyW']||keys['ArrowUp']) dy=-1;
-      if(keys['KeyS']||keys['ArrowDown']) dy=1;
-      fire = keys['Space']||keys['KeyZ'];
-      bomb = keys['KeyX'];
-      // touch p1
-      dx += touch.p1.dx; dy += touch.p1.dy;
-      if(touch.p1.fire) fire=true;
-    } else {
-      if(keys['Numpad4']||keys['KeyJ']) dx=-1;
-      if(keys['Numpad6']||keys['KeyL']) dx=1;
-      if(keys['Numpad8']||keys['KeyI']) dy=-1;
-      if(keys['Numpad5']||keys['KeyK']) dy=1;
-      fire = keys['Enter']||keys['NumpadEnter']||keys['KeyM'];
-      bomb = keys['KeyN'];
-      dx += touch.p2.dx; dy += touch.p2.dy;
-      if(touch.p2.fire) fire=true;
+    if (anyKey(map.left))  dx -= 1;
+    if (anyKey(map.right)) dx += 1;
+    if (anyKey(map.up))    dy -= 1;
+    if (anyKey(map.down))  dy += 1;
+    if (anyKey(map.fire))  fire = true;
+    if (anyKey(map.bomb))  bomb = true;
+    // Touch (existing zones)
+    const tp = this.pid === 1 ? touch.p1 : touch.p2;
+    dx += tp.dx; dy += tp.dy;
+    if (tp.fire) fire = true;
+    // Gamepad (pad 0 = P1, pad 1 = P2)
+    const pad = Gamepad.state(this.pid - 1);
+    if (pad) {
+      dx += pad.dx; dy += pad.dy;
+      if (pad.fire) fire = true;
+      if (pad.bomb) bomb = true;
     }
     return {dx:clamp(dx,-1,1), dy:clamp(dy,-1,1), fire, bomb};
   }
@@ -1124,18 +1215,49 @@ class Player {
   shoot(bullets) {
     const spd = -9;
     const c = this.pid===1 ? '#FFE066' : '#66EEFF';
-    if(this.shotLevel===1) {
-      bullets.push(new Bullet(this.x, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
+    const y = this.y - this.h/2;
+    const lvl = this.shotLevel;
+    const push = (bx,by,vx,vy,dmg,sz,opts) => bullets.push(Object.assign(new Bullet(bx,by,vx,vy,c,dmg,sz,true), opts||{}));
+    if (this.weapon === 'SPREAD') {
+      const fan = 3 + lvl; // 4..8 bullets
+      const angSpread = 0.55 + lvl*0.04;
+      for (let i = 0; i < fan; i++) {
+        const t = fan === 1 ? 0 : (i/(fan-1) - 0.5) * 2;
+        const ang = -Math.PI/2 + t * angSpread * 0.5;
+        push(this.x, y, Math.cos(ang)*9, Math.sin(ang)*9, 1, 2.2);
+      }
       Audio.play('shoot');
-    } else if(this.shotLevel===2) {
-      bullets.push(new Bullet(this.x-7, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
-      bullets.push(new Bullet(this.x+7, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
-      Audio.play('shoot');
-    } else if(this.shotLevel>=3) {
-      bullets.push(new Bullet(this.x, this.y-this.h/2, 0, spd, c, 1.5, 2.5, true));
-      bullets.push(new Bullet(this.x-10, this.y-this.h/2, -0.5, spd, c, 1, 2, true));
-      bullets.push(new Bullet(this.x+10, this.y-this.h/2,  0.5, spd, c, 1, 2, true));
+    } else if (this.weapon === 'LASER') {
+      // Fast piercing vertical beams
+      push(this.x, y, 0, -14, 1.8, 2.4, { piercing: 2 + lvl });
+      if (lvl >= 2) { push(this.x - 12, y, 0, -14, 1.2, 2, { piercing: 1 + lvl }); push(this.x + 12, y, 0, -14, 1.2, 2, { piercing: 1 + lvl }); }
+      if (lvl >= 4) { push(this.x - 22, y, 0, -14, 1.0, 1.8, { piercing: lvl }); push(this.x + 22, y, 0, -14, 1.0, 1.8, { piercing: lvl }); }
       Audio.play('shoot_powered');
+    } else if (this.weapon === 'HOMING') {
+      const count = Math.min(5, 1 + Math.floor(lvl/1));
+      for (let i = 0; i < count; i++) {
+        const ox = (i - (count-1)/2) * 8;
+        push(this.x + ox, y, rnd(-1.5,1.5), -6, 1.2, 2, { homing: true });
+      }
+      Audio.play('shoot');
+    } else {
+      // STANDARD
+      if (lvl === 1) {
+        push(this.x, y, 0, spd, 1, 2.5);
+      } else if (lvl === 2) {
+        push(this.x - 7, y, 0, spd, 1, 2.5); push(this.x + 7, y, 0, spd, 1, 2.5);
+      } else if (lvl === 3) {
+        push(this.x, y, 0, spd, 1.5, 2.5);
+        push(this.x - 10, y, -0.5, spd, 1, 2); push(this.x + 10, y, 0.5, spd, 1, 2);
+      } else if (lvl === 4) {
+        push(this.x - 6, y, 0, spd, 1.5, 2.5); push(this.x + 6, y, 0, spd, 1.5, 2.5);
+        push(this.x - 14, y, -0.8, spd, 1, 2);  push(this.x + 14, y, 0.8, spd, 1, 2);
+      } else { // 5
+        push(this.x, y, 0, spd, 2, 3);
+        push(this.x - 8, y, -0.3, spd, 1.5, 2.5); push(this.x + 8, y, 0.3, spd, 1.5, 2.5);
+        push(this.x - 16, y, -1, spd, 1, 2);      push(this.x + 16, y, 1, spd, 1, 2);
+      }
+      Audio.play(lvl >= 3 ? 'shoot_powered' : 'shoot');
     }
   }
   useBomb(bullets) {
@@ -1147,6 +1269,7 @@ class Player {
     Camera.shake(0.9, 450);
     Camera.flash('#FFEEBB', 180);
     CRT.pulseAberration(2.5, 600);
+    Gamepad.rumble(this.pid - 1, 0.9, 300);
     // kill all enemy bullets
     game.bullets = game.bullets.filter(b => b.isPlayer);
     // damage all enemies
@@ -1165,9 +1288,16 @@ class Player {
     Camera.flash('#FF4466', 300);
     Camera.slowMo(0.35, 280);
     CRT.pulseAberration(2.0, 500);
+    Gamepad.rumble(this.pid - 1, 1.0, 400);
+    Combo.reset();
     if(this.lives<=0) {
       this.active=false;
       this.dead=true;
+      // 2P: drop a wreck so the other player can revive us.
+      if (game.mode === 2 && game.players.length > 1) {
+        const other = game.players.find(p => p.pid !== this.pid && p.active);
+        if (other) { game.wrecks.push(new Wreck(this.x, this.y, this.pid, this.color)); }
+      }
     } else {
       this.respawnTimer=90;
       this.x = this.pid===1 ? W*0.35 : W*0.65;
@@ -1215,6 +1345,73 @@ class Player {
     }
     ctx.restore();
     ctx.globalAlpha=1;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: ENTITIES — WRECK (2P revive marker)
+   When a co-op player runs out of lives, their wreck persists for 15s.
+   The surviving teammate can stand over it for 3s to revive them.
+   ═══════════════════════════════════════════════════════════════════════════ */
+class Wreck {
+  constructor(x, y, pid, color) {
+    this.x=x; this.y=y; this.pid=pid; this.color=color;
+    this.life=900;          // 15s at 60fps
+    this.reviveProgress=0;  // 0..180 (3s)
+    this.dead=false;
+    this.t=0;
+  }
+  update(players) {
+    this.t++;
+    this.life--;
+    if (this.life <= 0) { this.dead = true; return; }
+    this.y += 0.2;
+    // Another player standing close?
+    const savior = players.find(p => p.active && p.pid !== this.pid && !p.dying && !p.respawnTimer);
+    if (savior && dist(savior, this) < 32) {
+      this.reviveProgress = Math.min(180, this.reviveProgress + 1);
+      if (this.t % 6 === 0) sparkle(this.x, this.y, this.color, 2);
+      if (this.reviveProgress >= 180) {
+        const fallen = players.find(p => p.pid === this.pid);
+        if (fallen) {
+          fallen.active = true;
+          fallen.lives  = 1;
+          fallen.dead   = false;
+          fallen.invTime = 120;
+          fallen.x = this.x; fallen.y = this.y;
+          fallen.shotLevel = Math.max(1, (fallen.shotLevel|0) - 1);
+          Audio.play('powerup');
+          Toasts.push('P' + this.pid + ' REVIVED!', this.color);
+        }
+        this.dead = true;
+      }
+    } else {
+      this.reviveProgress = Math.max(0, this.reviveProgress - 2);
+    }
+  }
+  draw(ctx) {
+    ctx.save();
+    const blink = Math.sin(this.t * 0.2) * 0.3 + 0.7;
+    ctx.shadowBlur = 12; ctx.shadowColor = this.color;
+    ctx.strokeStyle = this.color; ctx.lineWidth = 2;
+    ctx.globalAlpha = Math.min(1, this.life / 60) * blink;
+    // Broken ship silhouette
+    ctx.beginPath();
+    ctx.moveTo(this.x - 12, this.y - 4); ctx.lineTo(this.x + 8, this.y - 10);
+    ctx.lineTo(this.x + 12, this.y + 6); ctx.lineTo(this.x - 6, this.y + 8);
+    ctx.closePath(); ctx.stroke();
+    // Label
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = this.color; ctx.font = '9px Orbitron'; ctx.textAlign = 'center';
+    ctx.fillText('P' + this.pid + ' WRECK', this.x, this.y - 16);
+    // Revive progress ring
+    if (this.reviveProgress > 0) {
+      ctx.strokeStyle = '#FFEEBB'; ctx.lineWidth = 3; ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 22, -Math.PI/2, -Math.PI/2 + (this.reviveProgress/180) * Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 }
 
@@ -1572,6 +1769,54 @@ const Toasts = (() => {
 })();
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: GAMEPLAY — COMBO SYSTEM
+   Chain kills within a short window to raise a score multiplier up to x4.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const Combo = (() => {
+  const WINDOW = 120;  // frames of grace between kills (~2s at 60fps)
+  let count = 0;
+  let timer = 0;
+  let multiplier = 1;
+  let lastTier = 1;
+  function onKill() {
+    count++;
+    timer = WINDOW;
+    multiplier = Math.min(4, 1 + Math.floor(count / 4) * 0.5);
+    const tier = Math.floor(multiplier * 2); // 2, 3, 4, 5, 6, 7, 8 (×1 .. ×4)
+    if (tier > lastTier) {
+      lastTier = tier;
+      Toasts.push('COMBO x' + multiplier.toFixed(1) + '!', '#FF88EE');
+    }
+  }
+  function tick() {
+    if (timer > 0) timer--;
+    if (timer === 0 && count > 0) { reset(); }
+  }
+  function reset() { count = 0; multiplier = 1; lastTier = 1; }
+  function getMul()  { return multiplier; }
+  function getCount() { return count; }
+  function getRemaining() { return timer / WINDOW; }
+  function draw(ctx) {
+    if (count < 2) return;
+    const x = W / 2, y = 52;
+    ctx.save();
+    ctx.shadowBlur = 12; ctx.shadowColor = '#FF88EE';
+    ctx.fillStyle = '#FF88EE';
+    ctx.font = 'bold 16px Orbitron'; ctx.textAlign = 'center';
+    ctx.fillText('x' + multiplier.toFixed(1) + '  ' + count + ' CHAIN', x, y);
+    // Decay bar
+    const bw = 120;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,136,238,0.3)';
+    ctx.fillRect(x - bw/2, y + 6, bw, 3);
+    ctx.fillStyle = '#FF88EE';
+    ctx.fillRect(x - bw/2, y + 6, bw * getRemaining(), 3);
+    ctx.restore();
+  }
+  return { onKill, tick, reset, getMul, getCount, draw };
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════════
    SECTION: UI — ANIMATED SCORE ODOMETER
    Per-player HUD score lerps toward the real value for a classic arcade feel.
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -1594,6 +1839,7 @@ const game = {
   enemies: [],
   bullets: [],
   powerups: [],
+  wrecks: [],
   boss: null,
   bossActive: false,
   waves: [],
@@ -1604,8 +1850,9 @@ const game = {
   screenFlash: 0,
   totalScore: 0,
   menuSel: 0, diffSel: 0, modeSel: 0,
-  // Phase 4 menus
+  // Phase 4/5 menus
   optionsSel: 0,
+  bindingsSel: 0,
   scoresTab: 0,        // current diff tab on high scores screen
   nameEntryChars: ['A','A','A'],
   nameEntryCursor: 0,
@@ -1624,7 +1871,7 @@ function initGame() {
     const p2 = new Player(W*0.65, H-80, 2, '#44AAFF');
     game.players.push(p2);
   }
-  game.enemies=[]; game.bullets=[]; game.powerups=[];
+  game.enemies=[]; game.bullets=[]; game.powerups=[]; game.wrecks=[];
   game.boss=null; game.bossActive=false;
   game.waves = getLevelWaves(game.diff, game.level);
   game.currentWave=0; game.waveSpawnTimer=0;
@@ -1673,14 +1920,15 @@ function checkCollisions() {
       if(e.dead) return;
       if(Math.abs(b.x-e.x)<e.w/2+b.sz && Math.abs(b.y-e.y)<e.h/2+b.sz) {
         if(e.takeDamage(b.dmg)) {
-          // Award score
-          const scorer = game.players[0].pid===1?game.players[0]:game.players[0];
-          game.players.forEach(p=>{ if(p.active) p.score+=e.pts; });
-          game.totalScore+=e.pts;
+          // Award score with combo multiplier
+          Combo.onKill();
+          const pts = Math.round(e.pts * Combo.getMul());
+          game.players.forEach(p=>{ if(p.active) p.score+=pts; });
+          game.totalScore+=pts;
           // Random power-up
-          if(Math.random()<0.12) game.powerups.push(new PowerUp(e.x,e.y,PU_TYPES[rndInt(0,3)]));
+          if(Math.random()<0.12) game.powerups.push(new PowerUp(e.x,e.y,PU_TYPES[rndInt(0,PU_TYPES.length-1)]));
         }
-        b.dead=true;
+        if (b.piercing && b.piercing > 0) { b.piercing--; } else { b.dead=true; }
       }
     });
     // Boss
@@ -1688,15 +1936,17 @@ function checkCollisions() {
       const bx=game.boss, bw=bx.w/2+b.sz, bh=bx.h/2+b.sz;
       if(Math.abs(b.x-bx.x)<bw && Math.abs(b.y-bx.y)<bh) {
         if(bx.takeDamage(b.dmg)) {
-          game.players.forEach(p=>{ if(p.active) p.score+=bx.pts; });
-          game.totalScore+=bx.pts;
+          Combo.onKill();
+          const pts = Math.round(bx.pts * Combo.getMul());
+          game.players.forEach(p=>{ if(p.active) p.score+=pts; });
+          game.totalScore+=pts;
           game.bossActive=false;
           Audio.playMusic(MUSIC_STAGE);
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x,bx.y,'SHIELD'));
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x+30,bx.y,'SHOT'));
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x-30,bx.y,'BOMB'));
         }
-        b.dead=true;
+        if (b.piercing && b.piercing > 0) { b.piercing--; } else { b.dead=true; }
       }
     }
   });
@@ -1737,10 +1987,16 @@ function checkCollisions() {
         pu.dead=true;
         Audio.play('powerup');
         switch(pu.type) {
-          case 'SHOT': p.shotLevel=Math.min(3,p.shotLevel+1); showFlash('FIREPOWER UP!'); break;
-          case 'SPEED': p.speed=Math.min(5.5,p.speed+0.5); showFlash('SPEED UP!'); break;
-          case 'SHIELD': p.hasShield=true; p.shieldTime=600; showFlash('SHIELD!'); break;
-          case 'BOMB': p.bombs=Math.min(5,p.bombs+1); showFlash('BOMB +1!'); break;
+          case 'SHOT':   p.shotLevel=Math.min(5, p.shotLevel+1); showFlash('FIREPOWER LVL ' + p.shotLevel, 90, '#FF8800'); break;
+          case 'SPEED':  p.speed=Math.min(5.5, p.speed+0.5); showFlash('SPEED UP!', 90, '#00FFFF'); break;
+          case 'SHIELD': p.hasShield=true; p.shieldTime=600; showFlash('SHIELD!', 90, '#4488FF'); break;
+          case 'BOMB':   p.bombs=Math.min(5, p.bombs+1); showFlash('BOMB +1', 90, '#FF4466'); break;
+          case 'WEAPON': {
+            const options = ['STANDARD','SPREAD','LASER','HOMING'].filter(w => w !== p.weapon);
+            p.weapon = options[rndInt(0, options.length-1)];
+            showFlash(p.weapon + '!', 90, '#FF88EE');
+            break;
+          }
         }
       }
     });
@@ -1777,9 +2033,10 @@ function drawHUD() {
       ctx.fillStyle='#FF4466';
       ctx.beginPath(); ctx.arc(bx+i*14,30,5,0,Math.PI*2); ctx.fill();
     }
-    // Shot level
+    // Weapon + shot level
     ctx.fillStyle=p.color; ctx.font='8px Share Tech Mono'; ctx.textAlign='left';
-    ctx.fillText('PWR:'+p.shotLevel, xl+(p.lives*18)+(p.bombs*14)+16, 33);
+    const wlabel = p.weapon === 'STANDARD' ? 'STD' : p.weapon.slice(0,4);
+    ctx.fillText(wlabel+':'+p.shotLevel, xl+(p.lives*18)+(p.bombs*14)+16, 33);
     // Shield indicator
     if(p.hasShield) {
       ctx.fillStyle='#4488FF'; ctx.font='8px Share Tech Mono';
@@ -1788,6 +2045,8 @@ function drawHUD() {
   }
   drawPlayerHUD(game.players[0], 0);
   if(game.players.length>1) drawPlayerHUD(game.players[1], 1);
+  // Combo overlay (above top bar)
+  Combo.draw(ctx);
   // Level / Diff
   ctx.shadowBlur=6; ctx.shadowColor=dc.color;
   ctx.fillStyle=dc.color; ctx.font='9px Orbitron'; ctx.textAlign='center';
@@ -1892,6 +2151,7 @@ const OPTIONS_ITEMS = [
   { key: 'slowMo',        label: 'SLOW-MO',       type: 'bool' },
   { key: 'reducedMotion', label: 'REDUCED MOTION',type: 'bool' },
   { key: 'colorblind',    label: 'COLORBLIND',    type: 'enum',   values: ['off','protan','deutan','tritan'] },
+  { kind: 'action',       label: 'KEY BINDINGS' },
   { kind: 'action',       label: 'RESET DEFAULTS' },
   { kind: 'action',       label: 'BACK TO MENU' },
 ];
@@ -1903,6 +2163,7 @@ function handleOptionsInput(up, dn, lf, rt, ok, back) {
     if (ok) {
       Audio.play('menu_confirm');
       if (it.label.startsWith('RESET')) { Config.reset(); Audio.applyVolumes(); Toasts.push('DEFAULTS RESTORED','#88CCFF'); }
+      else if (it.label.startsWith('KEY')) { game.state = GS.BINDINGS; game.bindingsSel = 0; }
       else { game.state = GS.MENU; }
     }
     return;
@@ -1974,6 +2235,86 @@ function drawOptions() {
   ctx.globalAlpha = 1;
   ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '9px Share Tech Mono'; ctx.textAlign = 'center';
   ctx.fillText('W/S UP/DOWN · A/D or ←/→ CHANGE · ESC BACK', W/2, H - 24);
+  ctx.restore();
+}
+
+// ── Key Bindings screen ────────────────────────────────────────────────────
+const BINDING_ACTIONS = [
+  { player:'p1', action:'left',  label:'P1 LEFT'  },
+  { player:'p1', action:'right', label:'P1 RIGHT' },
+  { player:'p1', action:'up',    label:'P1 UP'    },
+  { player:'p1', action:'down',  label:'P1 DOWN'  },
+  { player:'p1', action:'fire',  label:'P1 FIRE'  },
+  { player:'p1', action:'bomb',  label:'P1 BOMB'  },
+  { player:'p2', action:'left',  label:'P2 LEFT'  },
+  { player:'p2', action:'right', label:'P2 RIGHT' },
+  { player:'p2', action:'up',    label:'P2 UP'    },
+  { player:'p2', action:'down',  label:'P2 DOWN'  },
+  { player:'p2', action:'fire',  label:'P2 FIRE'  },
+  { player:'p2', action:'bomb',  label:'P2 BOMB'  },
+];
+const BINDINGS_MENU_EXTRA = [
+  { label: 'RESET BINDINGS' },
+  { label: 'BACK TO OPTIONS' },
+];
+function handleBindingsInput(up, dn, ok, back) {
+  if (capturingFor) return; // globally captured; ignore menu nav
+  const total = BINDING_ACTIONS.length + BINDINGS_MENU_EXTRA.length;
+  if (up) { game.bindingsSel = (game.bindingsSel + total - 1) % total; Audio.play('menu_move'); return; }
+  if (dn) { game.bindingsSel = (game.bindingsSel + 1) % total; Audio.play('menu_move'); return; }
+  if (back) { game.state = GS.OPTIONS; Audio.play('menu_move'); return; }
+  if (ok) {
+    if (game.bindingsSel < BINDING_ACTIONS.length) {
+      const a = BINDING_ACTIONS[game.bindingsSel];
+      capturingFor = { player: a.player, action: a.action };
+      Audio.play('menu_confirm');
+    } else {
+      const extra = BINDINGS_MENU_EXTRA[game.bindingsSel - BINDING_ACTIONS.length];
+      if (extra.label.startsWith('RESET')) {
+        Config.set('bindings', null);
+        Toasts.push('BINDINGS RESET','#88CCFF');
+      } else {
+        game.state = GS.OPTIONS;
+      }
+      Audio.play('menu_confirm');
+    }
+  }
+}
+function drawBindings() {
+  drawStars();
+  ctx.save();
+  ctx.shadowBlur = 18; ctx.shadowColor = '#88CCFF';
+  ctx.fillStyle = '#88CCFF'; ctx.font = '20px Orbitron'; ctx.textAlign = 'center';
+  ctx.fillText('KEY BINDINGS', W/2, 42);
+  ctx.shadowBlur = 0;
+  const bindings = getBindings();
+  const top = 78, rowH = 20;
+  BINDING_ACTIONS.forEach((a, i) => {
+    const y = top + i * rowH;
+    const sel = game.bindingsSel === i;
+    ctx.globalAlpha = sel ? 1 : 0.7;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = sel ? '#FFEEBB' : '#AACCFF';
+    ctx.font = '11px Orbitron';
+    ctx.fillText(a.label, 40, y);
+    ctx.textAlign = 'right';
+    const bound = bindings[a.player][a.action];
+    const isCapturingThis = capturingFor && capturingFor.player === a.player && capturingFor.action === a.action;
+    ctx.fillStyle = isCapturingThis ? '#FFEEBB' : (sel ? '#FFEEBB' : '#AACCFF');
+    ctx.fillText(isCapturingThis ? '[ PRESS ANY KEY ]' : bound.join(' / '), W - 40, y);
+  });
+  ctx.globalAlpha = 1;
+  // Extras
+  BINDINGS_MENU_EXTRA.forEach((m, i) => {
+    const y = top + (BINDING_ACTIONS.length + i) * rowH + 18;
+    const sel = game.bindingsSel === BINDING_ACTIONS.length + i;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = sel ? '#FFEEBB' : '#AACCFF';
+    ctx.font = '11px Orbitron';
+    ctx.fillText(sel ? '► ' + m.label + ' ◄' : m.label, W/2, y);
+  });
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '9px Share Tech Mono';
+  ctx.fillText('W/S UP/DOWN · ENTER CAPTURE · ESC BACK', W/2, H - 14);
   ctx.restore();
 }
 
@@ -2218,6 +2559,8 @@ function handleMenuInput() {
     if(lf) { game.scoresTab = (game.scoresTab + 2) % 3; Audio.play('menu_move'); }
     if(rt) { game.scoresTab = (game.scoresTab + 1) % 3; Audio.play('menu_move'); }
     if(ok || back) { game.state = GS.MENU; Audio.play('menu_move'); }
+  } else if(game.state===GS.BINDINGS) {
+    handleBindingsInput(up, dn, ok, back);
   } else if(game.state===GS.NAME_ENTRY) {
     handleNameEntryInput(up, dn, lf, rt, ok);
   } else if(game.state===GS.GAMEOVER||game.state===GS.VICTORY) {
@@ -2236,6 +2579,7 @@ function handleMenuInput() {
    SECTION: ENGINE — UPDATE
    ═══════════════════════════════════════════════════════════════════════════ */
 function update() {
+  Gamepad.poll();
   handleMenuInput();
   Toasts.update();
   // Slow-motion: stochastically skip physics ticks so time dilates smoothly.
@@ -2287,16 +2631,21 @@ function update() {
   game.bullets = game.bullets.filter(b=>!b.dead);
   game.powerups.forEach(pu=>pu.update());
   game.powerups = game.powerups.filter(pu=>!pu.dead);
+  game.wrecks.forEach(w => w.update(game.players));
+  game.wrecks = game.wrecks.filter(w => !w.dead);
   particles.forEach(p=>p.update());
   particles = particles.filter(p=>p.life>0);
   Confetti.update();
+  Combo.tick();
   // Players
   game.players.forEach(p => { if(p.active||p.dying>0||p.respawnTimer>0) p.update(game.bullets); });
   // Check collisions
   checkCollisions();
-  // Game over check
-  const anyAlive = game.players.some(p=>p.active||p.dying>0||p.respawnTimer>0);
-  if(!anyAlive) {
+  // Game over check — in 2P, a pending wreck keeps hope alive.
+  const anyAlive  = game.players.some(p => p.active || p.dying>0 || p.respawnTimer>0);
+  const canRevive = game.mode === 2 && game.wrecks.length > 0 &&
+                    game.players.some(p => p.active || p.dying>0 || p.respawnTimer>0);
+  if (!anyAlive && !canRevive) {
     game.state=GS.GAMEOVER; menuT=0;
     Audio.play('explode_big');
     Audio.stopMusic();
@@ -2319,11 +2668,13 @@ function draw() {
   if(game.state===GS.MENU)       { drawMenu();       ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.MODE)       { drawModeSelect(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.OPTIONS)    { drawOptions();    ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.BINDINGS)   { drawBindings();   ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.HIGHSCORES) { drawHighScores(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.NAME_ENTRY) { drawNameEntry();  ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   // Playing / paused / level clear
   particles.forEach(p=>p.draw(ctx));
   game.powerups.forEach(pu=>pu.draw(ctx));
+  game.wrecks.forEach(w => w.draw(ctx));
   game.enemies.forEach(e=>e.draw(ctx));
   if(game.boss&&!game.boss.dead) game.boss.draw(ctx);
   game.bullets.forEach(b=>b.draw(ctx));
