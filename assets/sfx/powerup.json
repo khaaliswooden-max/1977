@@ -1,0 +1,14 @@
+{
+  "waveType": 1,
+  "attackTime": 0.0,
+  "sustainTime": 0.15,
+  "sustainPunch": 0.3,
+  "decayTime": 0.35,
+  "startFrequency": 0.35,
+  "slide": 0.25,
+  "squareDuty": 0.3,
+  "vibratoDepth": 0.2,
+  "vibratoSpeed": 0.55,
+  "lpFilterCutoff": 0.95,
+  "masterVolume": 0.42
+}

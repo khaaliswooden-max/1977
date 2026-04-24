@@ -1,0 +1,11 @@
+{
+  "waveType": 3,
+  "attackTime": 0.0,
+  "sustainTime": 0.12,
+  "sustainPunch": 0.5,
+  "decayTime": 0.35,
+  "startFrequency": 0.38,
+  "slide": -0.45,
+  "lpFilterCutoff": 0.6,
+  "masterVolume": 0.5
+}
