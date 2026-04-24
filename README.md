@@ -1,0 +1,82 @@
+# 1977 — AIRCRAFT WARFARE
+
+A retro arcade-style vertical shoot-'em-up built as a single self-contained HTML file. Solo or 2-player local co-op, CRT scanline aesthetic, three difficulty tiers, power-ups, bombs, and boss fights.
+
+## Features
+
+- **Single-file game** — one HTML document, zero build step, zero dependencies
+- **1P or 2P local co-op** on the same keyboard (or two touch zones on mobile)
+- **Three difficulties**: NOVICE, INTERMEDIATE, ADVANCED — tuning enemy speed, fire rate, boss HP, lives, and starting shield
+- **Power-ups**: SHOT (weapon level up), SPEED, SHIELD, BOMB
+- **Mobile-ready** with on-screen joysticks and fire buttons
+- **CRT look**: scanlines + vignette overlay, pixelated rendering
+
+## Quick start
+
+Clone and open the file in any modern browser:
+
+```bash
+git clone https://github.com/khaaliswooden-max/1977.git
+cd 1977
+# rename on first use if you prefer (optional)
+# mv code index.html
+xdg-open code   # Linux
+open code       # macOS
+start code      # Windows
+```
+
+Or serve it locally (recommended for mobile testing over LAN):
+
+```bash
+python3 -m http.server 8000
+# then visit http://localhost:8000/code
+```
+
+No build step, no npm install, no toolchain.
+
+## Controls
+
+| Action       | Player 1                 | Player 2                        |
+| ------------ | ------------------------ | ------------------------------- |
+| Move         | `W` `A` `S` `D` / Arrows | `I` `J` `K` `L` / Numpad 8456   |
+| Fire         | `Space` or `Z`           | `Enter` / `NumpadEnter` / `M`   |
+| Bomb         | `X`                      | `N`                             |
+| Pause        | `P` / `Esc`              | —                               |
+
+On touch devices: left half of the screen drives Player 1 (joystick + FIRE), right half drives Player 2.
+
+See [CONTROLS.md](CONTROLS.md) for the full reference.
+
+## Tech stack
+
+- Plain HTML5 + CSS + JavaScript
+- `<canvas>` 2D rendering with `image-rendering: pixelated`
+- Google Fonts: *Share Tech Mono*, *Orbitron*
+
+## Project layout
+
+```
+.
+├── code                # the game (single HTML file)
+├── README.md
+├── LICENSE             # code license
+├── ASSETS_LICENSE.md   # art / audio license (if/when assets are added)
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+├── SECURITY.md
+├── SUPPORT.md
+├── CREDITS.md
+├── CONTROLS.md
+├── BUILD.md
+├── MODDING.md
+└── THIRD_PARTY_NOTICES.md
+```
+
+## Contributing
+
+Bug reports, balance tweaks, new enemies, and pixel art are all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Code is released under the [MIT License](LICENSE). Game assets (sprites, audio, fonts-where-redistributed) are covered separately by [ASSETS_LICENSE.md](ASSETS_LICENSE.md).
