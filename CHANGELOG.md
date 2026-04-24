@@ -24,6 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Script reorganized into labelled sections (CONFIG, AUDIO, RENDER,
     INPUT, ENTITIES, UI, ENGINE) so later phases have clear drop-in points.
   - Build version stamp emitted to the JS console on boot.
+- **Phase 4 — UX / UI.**
+  - Main menu extended with `OPTIONS` and `HIGH SCORES` entries; vendor
+    version stamp visible at the bottom.
+  - New `OPTIONS` screen: live sliders for Master/Music/SFX volume,
+    CRT mode (webgl / css / off), screen-shake, slow-mo toggle,
+    reduced-motion toggle, colorblind palette stub, and a
+    `RESET DEFAULTS` action. Changes persist via `Config`.
+  - New `HIGH SCORES` screen: top-10 per difficulty, switch tabs with
+    left/right. Scores stored in `Config.highScores` under
+    `aw1977.config.v1`; capped at 200 entries total.
+  - New `NAME_ENTRY` screen: 3-initial entry when a run qualifies for
+    the current difficulty's top-10. Up/Down to change letter, Left/Right
+    to move cursor, Enter to confirm.
+  - `Toast` queue replaces the single flash-message banner: stacks
+    multiple notifications (wave transitions, power-ups, saved scores)
+    with slide-in / slide-out animation.
+  - HUD now shows an odometer-style animated score that lerps toward the
+    real value — a small arcade touch.
+  - Damage vignette: red radial gradient during invulnerability frames
+    and a pulsing low-lives warning.
+  - Bug fix: game-over screen no longer crashes when rendering 2P
+    per-player scores (was calling `.padStart` on a number).
+  - Back navigation via `Esc` now works on MODE/OPTIONS/HIGHSCORES.
 - **Phase 3 — graphics.**
   - WebGL CRT post-process (`CRT` module): scanlines, barrel curvature,
     bloom, vignette, chromatic aberration, flicker. GLSL adapted from

@@ -65,7 +65,10 @@ const BUILD_VERSION = 'dev';
    SECTION: CONSTANTS
    ═══════════════════════════════════════════════════════════════════════════ */
 const W = 480, H = 640;
-const GS = { MENU:0, DIFF:1, MODE:2, PLAYING:3, PAUSED:4, LEVEL_CLEAR:5, GAMEOVER:6, VICTORY:7 };
+const GS = {
+  MENU:0, DIFF:1, MODE:2, PLAYING:3, PAUSED:4, LEVEL_CLEAR:5, GAMEOVER:6,
+  VICTORY:7, OPTIONS:8, HIGHSCORES:9, NAME_ENTRY:10,
+};
 const DIFF_CFG = [
   { name:'NOVICE',    color:'#44FF88', lives:5, enemySpd:0.7, fireRate:0.6, bossHp:1.0, shield:true  },
   { name:'INTERMEDIATE', color:'#FFB800', lives:3, enemySpd:1.0, fireRate:1.0, bossHp:1.5, shield:false },
@@ -1522,6 +1525,60 @@ function getLevelWaves(diff, level) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: UI — TOAST QUEUE
+   Replaces the single flash-message with a stack; each toast slides in,
+   holds, then slides out.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const Toasts = (() => {
+  const queue = [];
+  function push(msg, color) {
+    queue.push({ msg, color: color || '#FFB800', t: 0, ttl: 90 });
+    if (queue.length > 4) queue.shift();
+  }
+  function update() {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      queue[i].t++;
+      if (queue[i].t > queue[i].ttl) queue.splice(i, 1);
+    }
+  }
+  function draw(ctx) {
+    let y = 50;
+    for (const t of queue) {
+      const inT  = Math.min(1, t.t / 10);
+      const outT = Math.min(1, (t.ttl - t.t) / 15);
+      const a = Math.min(inT, outT);
+      const slide = (1 - inT) * 24;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.shadowBlur = 14; ctx.shadowColor = t.color;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      const text = t.msg;
+      ctx.font = 'bold 13px Orbitron';
+      const tw = ctx.measureText(text).width + 28;
+      ctx.fillRect(W/2 - tw/2 + slide, y - 14, tw, 22);
+      ctx.fillStyle = t.color;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, W/2 + slide, y - 3);
+      ctx.restore();
+      y += 28;
+    }
+  }
+  return { push, update, draw };
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: UI — ANIMATED SCORE ODOMETER
+   Per-player HUD score lerps toward the real value for a classic arcade feel.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function tickScoreDisplay(p) {
+  if (p._scoreShown === undefined) p._scoreShown = p.score;
+  if (p._scoreShown < p.score) {
+    const delta = Math.max(1, Math.ceil((p.score - p._scoreShown) * 0.08));
+    p._scoreShown = Math.min(p.score, p._scoreShown + delta);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    SECTION: GAME STATE
    ═══════════════════════════════════════════════════════════════════════════ */
 const game = {
@@ -1542,6 +1599,13 @@ const game = {
   screenFlash: 0,
   totalScore: 0,
   menuSel: 0, diffSel: 0, modeSel: 0,
+  // Phase 4 menus
+  optionsSel: 0,
+  scoresTab: 0,        // current diff tab on high scores screen
+  nameEntryChars: ['A','A','A'],
+  nameEntryCursor: 0,
+  pendingScore: null,  // { diff, mode, score } queued for name entry
+  // Legacy flash kept for back-compat; new code uses Toasts.
   flashMsg: '', flashTimer: 0,
   bgScroll: 0,
   isMobile: /Android|iPhone|iPad|iPod|Touch/i.test(navigator.userAgent),
@@ -1582,7 +1646,10 @@ function startNextWave() {
   }
 }
 
-function showFlash(msg, t=90) { game.flashMsg=msg; game.flashTimer=t; }
+function showFlash(msg, t=90, color) {
+  game.flashMsg=msg; game.flashTimer=t;
+  Toasts.push(msg, color);
+}
 
 function spawnEnemy() {
   if(game.spawnedEnemies.length===0) return;
@@ -1686,11 +1753,12 @@ function drawHUD() {
   ctx.fillRect(0,0,W,36);
   // Score / lives
   function drawPlayerHUD(p, side) {
+    tickScoreDisplay(p);
     const xl = side===0?8:W/2+4;
     ctx.shadowBlur=8; ctx.shadowColor=p.color;
     ctx.fillStyle=p.color; ctx.font='10px Orbitron';
     ctx.textAlign='left';
-    ctx.fillText('P'+p.pid+' '+p.score.toString().padStart(7,'0'), xl, 14);
+    ctx.fillText('P'+p.pid+' '+p._scoreShown.toString().padStart(7,'0'), xl, 14);
     // Lives
     for(let i=0;i<p.lives;i++) {
       ctx.fillStyle=p.color;
@@ -1728,41 +1796,48 @@ function drawHUD() {
    SECTION: UI — SCREENS (Phase 4 adds Options/HighScore screens)
    ═══════════════════════════════════════════════════════════════════════════ */
 let menuT=0;
+const MENU_ITEMS = [
+  { label: 'NOVICE',       kind: 'diff', diff: 0, color: '#44FF88' },
+  { label: 'INTERMEDIATE', kind: 'diff', diff: 1, color: '#FFB800' },
+  { label: 'ADVANCED',     kind: 'diff', diff: 2, color: '#FF4444' },
+  { label: 'OPTIONS',      kind: 'nav',  target: 'OPTIONS',    color: '#88CCFF' },
+  { label: 'HIGH SCORES',  kind: 'nav',  target: 'HIGHSCORES', color: '#FFAA88' },
+];
 function drawMenu() {
   menuT++;
   drawStars();
-  // Title
   ctx.save();
   ctx.shadowBlur=30; ctx.shadowColor='#FFB800';
   ctx.fillStyle='#FFB800'; ctx.font='bold 56px Orbitron'; ctx.textAlign='center';
-  ctx.fillText('1977', W/2, H/2-160);
+  ctx.fillText('1977', W/2, 120);
   ctx.shadowBlur=10; ctx.shadowColor='#FF6600';
   ctx.fillStyle='#FF9900'; ctx.font='13px Orbitron';
-  ctx.fillText('AIRCRAFT WARFARE', W/2, H/2-120);
+  ctx.fillText('AIRCRAFT WARFARE', W/2, 148);
   // Menu items
-  const items=['NOVICE','INTERMEDIATE','ADVANCED'];
-  const glow=['#44FF88','#FFB800','#FF4444'];
-  ctx.font='16px Orbitron';
-  items.forEach((it,i)=>{
-    const y = H/2-40+i*52;
+  ctx.font='15px Orbitron';
+  MENU_ITEMS.forEach((it,i)=>{
+    const y = 210 + i*46;
     const sel = game.menuSel===i;
     if(sel) {
-      ctx.shadowBlur=20; ctx.shadowColor=glow[i];
-      ctx.fillStyle=glow[i];
-      ctx.fillRect(W/2-100,y-22,200,36);
+      ctx.shadowBlur=20; ctx.shadowColor=it.color;
+      ctx.fillStyle=it.color;
+      ctx.fillRect(W/2-120,y-20,240,32);
       ctx.fillStyle='#000';
     } else {
       ctx.shadowBlur=0;
-      ctx.strokeStyle=glow[i]; ctx.lineWidth=1.5;
-      ctx.strokeRect(W/2-100,y-22,200,36);
-      ctx.fillStyle=glow[i];
+      ctx.strokeStyle=it.color; ctx.lineWidth=1.5;
+      ctx.strokeRect(W/2-120,y-20,240,32);
+      ctx.fillStyle=it.color;
     }
-    ctx.fillText(it,W/2,y);
+    ctx.fillText(it.label,W/2,y);
   });
   ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font='9px Share Tech Mono'; ctx.shadowBlur=0;
-  ctx.fillText(game.isMobile?'TAP TO SELECT':'W/S + ENTER TO SELECT',W/2,H/2+140);
-  ctx.fillText('SINGLE/TWO PLAYER · 6 LEVELS EACH MODE',W/2,H/2+160);
+  ctx.fillText(game.isMobile?'TAP TO SELECT':'W/S + ENTER TO SELECT',W/2,H-64);
+  ctx.fillText('SINGLE/TWO PLAYER · 6 LEVELS EACH MODE',W/2,H-48);
   ctx.fillText('© 1977  VISIONBLOX SKUNKWORKS',W/2,H-20);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '8px Share Tech Mono';
+  ctx.fillText('build ' + BUILD_VERSION, W/2, H-4);
   ctx.restore();
 }
 
@@ -1802,6 +1877,247 @@ function drawModeSelect() {
   ctx.restore();
 }
 
+// ── Options ────────────────────────────────────────────────────────────────
+const OPTIONS_ITEMS = [
+  { key: 'volMaster',     label: 'MASTER VOLUME', type: 'slider', min: 0, max: 1, step: 0.05 },
+  { key: 'volMusic',      label: 'MUSIC VOLUME',  type: 'slider', min: 0, max: 1, step: 0.05 },
+  { key: 'volSfx',        label: 'SFX VOLUME',    type: 'slider', min: 0, max: 1, step: 0.05 },
+  { key: 'crt',           label: 'CRT MODE',      type: 'enum',   values: ['webgl','css','off'] },
+  { key: 'shake',         label: 'SCREEN SHAKE',  type: 'slider', min: 0, max: 1, step: 0.1 },
+  { key: 'slowMo',        label: 'SLOW-MO',       type: 'bool' },
+  { key: 'reducedMotion', label: 'REDUCED MOTION',type: 'bool' },
+  { key: 'colorblind',    label: 'COLORBLIND',    type: 'enum',   values: ['off','protan','deutan','tritan'] },
+  { kind: 'action',       label: 'RESET DEFAULTS' },
+  { kind: 'action',       label: 'BACK TO MENU' },
+];
+function handleOptionsInput(up, dn, lf, rt, ok, back) {
+  if (up) { game.optionsSel = (game.optionsSel + OPTIONS_ITEMS.length - 1) % OPTIONS_ITEMS.length; Audio.play('menu_move'); return; }
+  if (dn) { game.optionsSel = (game.optionsSel + 1) % OPTIONS_ITEMS.length; Audio.play('menu_move'); return; }
+  const it = OPTIONS_ITEMS[game.optionsSel];
+  if (it.kind === 'action') {
+    if (ok) {
+      Audio.play('menu_confirm');
+      if (it.label.startsWith('RESET')) { Config.reset(); Audio.applyVolumes(); Toasts.push('DEFAULTS RESTORED','#88CCFF'); }
+      else { game.state = GS.MENU; }
+    }
+    return;
+  }
+  if (back) { game.state = GS.MENU; Audio.play('menu_move'); return; }
+  const cur = Config.get(it.key);
+  let changed = false, next = cur;
+  if (it.type === 'slider') {
+    if (lf) next = Math.max(it.min, +(cur - it.step).toFixed(2));
+    if (rt) next = Math.min(it.max, +(cur + it.step).toFixed(2));
+    if (next !== cur) changed = true;
+  } else if (it.type === 'enum') {
+    const i = it.values.indexOf(cur);
+    if (lf) { next = it.values[(i + it.values.length - 1) % it.values.length]; changed = true; }
+    if (rt) { next = it.values[(i + 1) % it.values.length]; changed = true; }
+  } else if (it.type === 'bool') {
+    if (lf || rt || ok) { next = !cur; changed = true; }
+  }
+  if (changed) {
+    Config.set(it.key, next);
+    Audio.play('menu_move');
+    if (it.key.startsWith('vol')) Audio.applyVolumes();
+  }
+}
+function drawOptions() {
+  drawStars();
+  ctx.save();
+  ctx.shadowBlur = 18; ctx.shadowColor = '#88CCFF';
+  ctx.fillStyle = '#88CCFF'; ctx.font = '22px Orbitron'; ctx.textAlign = 'center';
+  ctx.fillText('OPTIONS', W/2, 60);
+  ctx.shadowBlur = 0;
+  const top = 110;
+  OPTIONS_ITEMS.forEach((it, i) => {
+    const y = top + i*38;
+    const sel = game.optionsSel === i;
+    ctx.globalAlpha = sel ? 1 : 0.7;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = sel ? '#FFEEBB' : '#AACCFF';
+    ctx.font = '12px Orbitron';
+    ctx.fillText(it.label, 32, y);
+    ctx.textAlign = 'right';
+    let valText = '';
+    if (it.kind === 'action') {
+      if (sel) { ctx.fillStyle = '#FFEEBB'; ctx.fillText('◄ PRESS ENTER ►', W - 32, y); }
+    } else {
+      const val = Config.get(it.key);
+      if (it.type === 'slider') {
+        const pct = (val - it.min) / (it.max - it.min);
+        const bw = 120, bh = 10;
+        const bx = W - 32 - bw;
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(bx, y - 8, bw, bh);
+        ctx.fillStyle = sel ? '#88CCFF' : '#557799';
+        ctx.fillRect(bx, y - 8, bw * pct, bh);
+        ctx.fillStyle = '#DDEEFF'; ctx.font = '10px Share Tech Mono';
+        ctx.textAlign = 'right';
+        ctx.fillText(Math.round(pct * 100) + '%', bx - 6, y);
+      } else if (it.type === 'enum') {
+        valText = '◄ ' + String(val).toUpperCase() + ' ►';
+        ctx.fillStyle = sel ? '#FFEEBB' : '#AACCFF';
+        ctx.fillText(valText, W - 32, y);
+      } else if (it.type === 'bool') {
+        valText = val ? '◄ ON ►' : '◄ OFF ►';
+        ctx.fillStyle = val ? '#44FF88' : '#888888';
+        ctx.fillText(valText, W - 32, y);
+      }
+    }
+  });
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '9px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText('W/S UP/DOWN · A/D or ←/→ CHANGE · ESC BACK', W/2, H - 24);
+  ctx.restore();
+}
+
+// ── High Scores ────────────────────────────────────────────────────────────
+const MAX_HIGH_SCORES = 10;
+function getHighScores() {
+  const all = Config.get('highScores') || [];
+  return Array.isArray(all) ? all : [];
+}
+function topScoresForDiff(diff) {
+  return getHighScores()
+    .filter(s => s.diff === diff)
+    .sort((a,b) => b.score - a.score)
+    .slice(0, MAX_HIGH_SCORES);
+}
+function isHighScore(score, diff) {
+  const list = topScoresForDiff(diff);
+  return list.length < MAX_HIGH_SCORES || score > list[list.length - 1].score;
+}
+function addHighScore(entry) {
+  const all = getHighScores().concat([entry]);
+  Config.set('highScores', all.slice(-200)); // cap storage
+}
+function queueHighScoreIfQualifies() {
+  const score = game.totalScore | 0;
+  if (score <= 0) return;
+  if (!isHighScore(score, game.diff)) return;
+  game.pendingScore = { score, diff: game.diff, mode: game.mode };
+  game.nameEntryChars = ['A','A','A'];
+  game.nameEntryCursor = 0;
+  // Defer the state change so the game-over SFX/visuals land first. Only
+  // transition if the player hasn't already left the game-over screen.
+  setTimeout(() => {
+    if (game.pendingScore && (game.state === GS.GAMEOVER || game.state === GS.VICTORY)) {
+      game.state = GS.NAME_ENTRY;
+    } else {
+      game.pendingScore = null;
+    }
+  }, 1200);
+}
+function drawHighScores() {
+  drawStars();
+  ctx.save();
+  ctx.shadowBlur = 18; ctx.shadowColor = '#FFAA88';
+  ctx.fillStyle = '#FFAA88'; ctx.font = '22px Orbitron'; ctx.textAlign = 'center';
+  ctx.fillText('HIGH SCORES', W/2, 60);
+  ctx.shadowBlur = 0;
+  // Difficulty tabs
+  DIFF_CFG.forEach((d, i) => {
+    const x = W/4 * (i+1);
+    const sel = game.scoresTab === i;
+    ctx.globalAlpha = sel ? 1 : 0.55;
+    ctx.fillStyle = sel ? d.color : 'rgba(255,255,255,0.5)';
+    ctx.font = '11px Orbitron';
+    ctx.fillText(d.name, x, 95);
+    if (sel) {
+      ctx.fillRect(x - 40, 100, 80, 2);
+    }
+  });
+  ctx.globalAlpha = 1;
+  // List
+  const scores = topScoresForDiff(game.scoresTab);
+  ctx.textAlign = 'left'; ctx.font = '12px Share Tech Mono';
+  if (scores.length === 0) {
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.textAlign = 'center';
+    ctx.fillText('— NO SCORES YET —', W/2, 200);
+    ctx.fillText('BE THE FIRST.',     W/2, 220);
+  } else {
+    const top = 140;
+    scores.forEach((s, i) => {
+      const y = top + i * 22;
+      ctx.fillStyle = i === 0 ? '#FFB800' : i < 3 ? '#FFEEBB' : 'rgba(255,255,255,0.75)';
+      ctx.textAlign = 'left';
+      ctx.fillText(String(i+1).padStart(2,' ') + '.', 40, y);
+      ctx.fillText(s.initials || '---', 76, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(String(s.score).padStart(8,'0'), W - 80, y);
+      ctx.fillText((s.mode === 2 ? '2P' : '1P'), W - 40, y);
+    });
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '9px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText('A/D or ←/→ SWITCH DIFFICULTY · ESC BACK', W/2, H - 24);
+  ctx.restore();
+}
+
+// ── Name Entry (3 initials on new high score) ─────────────────────────────
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_';
+function handleNameEntryInput(up, dn, lf, rt, ok) {
+  if (lf) { game.nameEntryCursor = (game.nameEntryCursor + 2) % 3; Audio.play('menu_move'); return; }
+  if (rt) { game.nameEntryCursor = (game.nameEntryCursor + 1) % 3; Audio.play('menu_move'); return; }
+  const curChar = game.nameEntryChars[game.nameEntryCursor];
+  const i = ALPHABET.indexOf(curChar);
+  if (up) { game.nameEntryChars[game.nameEntryCursor] = ALPHABET[(i + ALPHABET.length - 1) % ALPHABET.length]; Audio.play('menu_move'); return; }
+  if (dn) { game.nameEntryChars[game.nameEntryCursor] = ALPHABET[(i + 1) % ALPHABET.length]; Audio.play('menu_move'); return; }
+  if (ok) {
+    if (game.nameEntryCursor < 2) {
+      game.nameEntryCursor++;
+      Audio.play('menu_move');
+    } else {
+      Audio.play('menu_confirm');
+      const initials = game.nameEntryChars.join('');
+      const p = game.pendingScore;
+      addHighScore({ initials, score: p.score, diff: p.diff, mode: p.mode, date: Date.now() });
+      game.pendingScore = null;
+      game.state = GS.HIGHSCORES;
+      game.scoresTab = p.diff;
+      Toasts.push('SCORE SAVED: ' + initials, '#FFEEBB');
+    }
+  }
+}
+function drawNameEntry() {
+  drawStars();
+  ctx.save();
+  ctx.shadowBlur = 24; ctx.shadowColor = '#FFB800';
+  ctx.fillStyle = '#FFB800'; ctx.font = '22px Orbitron'; ctx.textAlign = 'center';
+  ctx.fillText('NEW HIGH SCORE', W/2, 140);
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#FFEEBB'; ctx.font = '14px Orbitron';
+  const sc = game.pendingScore ? game.pendingScore.score : 0;
+  ctx.fillText(String(sc).padStart(8,'0'), W/2, 175);
+  ctx.fillText('ENTER YOUR INITIALS', W/2, 230);
+  // 3 character slots
+  const slotW = 50, gap = 14;
+  const totalW = 3 * slotW + 2 * gap;
+  const startX = W/2 - totalW/2;
+  for (let i = 0; i < 3; i++) {
+    const x = startX + i * (slotW + gap);
+    const y = 260;
+    const sel = game.nameEntryCursor === i;
+    ctx.strokeStyle = sel ? '#FFEEBB' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.strokeRect(x, y, slotW, slotW);
+    ctx.shadowBlur = sel ? 18 : 0;
+    ctx.shadowColor = '#FFB800';
+    ctx.fillStyle = sel ? '#FFB800' : 'rgba(255,200,120,0.85)';
+    ctx.font = '32px Orbitron'; ctx.textAlign = 'center';
+    ctx.fillText(game.nameEntryChars[i], x + slotW/2, y + slotW*0.7);
+    if (sel) {
+      ctx.fillStyle = '#FFEEBB'; ctx.font = '10px Orbitron';
+      ctx.fillText('▲', x + slotW/2, y - 6);
+      ctx.fillText('▼', x + slotW/2, y + slotW + 14);
+    }
+  }
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '9px Share Tech Mono';
+  ctx.fillText('W/S CHANGE · A/D NEXT · ENTER CONFIRM', W/2, H - 60);
+  ctx.restore();
+}
+
 function drawLevelClear() {
   drawStars();
   ctx.save();
@@ -1831,8 +2147,8 @@ function drawGameOver(victory) {
   ctx.fillText(game.totalScore.toString().padStart(8,'0'), W/2, H/2+20);
   if(game.players.length>1) {
     ctx.fillStyle='#FFB800'; ctx.font='10px Orbitron';
-    ctx.fillText('P1: '+game.players[0].score.padStart?game.players[0].score:game.players[0].score, W/2-60, H/2+50);
-    ctx.fillText('P2: '+game.players[1].score, W/2+60, H/2+50);
+    ctx.fillText('P1: '+String(game.players[0].score).padStart(7,'0'), W/2-60, H/2+50);
+    ctx.fillText('P2: '+String(game.players[1].score).padStart(7,'0'), W/2+60, H/2+50);
   }
   const blink=Math.floor(menuT/25)%2;
   if(blink){ctx.fillStyle='rgba(255,255,255,0.7)';ctx.font='11px Orbitron';ctx.fillText(game.isMobile?'TAP TO PLAY AGAIN':'PRESS ENTER TO PLAY AGAIN',W/2,H/2+90);}
@@ -1866,27 +2182,48 @@ canvas.addEventListener('touchend', ()=>{ tapFlag=true; });
 function handleMenuInput() {
   const up = checkJustPressed('KeyW')||checkJustPressed('ArrowUp');
   const dn = checkJustPressed('KeyS')||checkJustPressed('ArrowDown');
+  const lf = checkJustPressed('KeyA')||checkJustPressed('ArrowLeft');
+  const rt = checkJustPressed('KeyD')||checkJustPressed('ArrowRight');
   const ok = checkJustPressed('Space')||checkJustPressed('Enter')||tapFlag;
+  const back = checkJustPressed('Escape');
   tapFlag=false;
   if(game.state===GS.MENU) {
     if(up) { game.menuSel=Math.max(0,game.menuSel-1); Audio.play('menu_move'); }
-    if(dn) { game.menuSel=Math.min(2,game.menuSel+1); Audio.play('menu_move'); }
-    if(ok) { game.diff=game.menuSel; game.state=GS.MODE; game.modeSel=0; Audio.play('menu_confirm'); }
+    if(dn) { game.menuSel=Math.min(MENU_ITEMS.length-1,game.menuSel+1); Audio.play('menu_move'); }
+    if(ok) {
+      const it = MENU_ITEMS[game.menuSel];
+      Audio.play('menu_confirm');
+      if (it.kind === 'diff')      { game.diff = it.diff; game.state = GS.MODE; game.modeSel = 0; }
+      else if (it.target === 'OPTIONS')    { game.state = GS.OPTIONS;    game.optionsSel = 0; }
+      else if (it.target === 'HIGHSCORES') { game.state = GS.HIGHSCORES; game.scoresTab = game.diff; }
+    }
   } else if(game.state===GS.MODE) {
     if(up) { game.modeSel=0; Audio.play('menu_move'); }
     if(dn) { game.modeSel=1; Audio.play('menu_move'); }
+    if(back) { game.state = GS.MENU; Audio.play('menu_move'); }
     if(ok) {
       game.mode=game.modeSel+1; game.level=1; initGame(); game.state=GS.PLAYING;
       document.getElementById('mobile-controls').style.display = game.isMobile||true?'block':'none';
       Audio.play('menu_confirm');
       Audio.playMusic(MUSIC_STAGE);
     }
+  } else if(game.state===GS.OPTIONS) {
+    handleOptionsInput(up, dn, lf, rt, ok, back);
+  } else if(game.state===GS.HIGHSCORES) {
+    if(lf) { game.scoresTab = (game.scoresTab + 2) % 3; Audio.play('menu_move'); }
+    if(rt) { game.scoresTab = (game.scoresTab + 1) % 3; Audio.play('menu_move'); }
+    if(ok || back) { game.state = GS.MENU; Audio.play('menu_move'); }
+  } else if(game.state===GS.NAME_ENTRY) {
+    handleNameEntryInput(up, dn, lf, rt, ok);
   } else if(game.state===GS.GAMEOVER||game.state===GS.VICTORY) {
-    if(ok) { game.state=GS.MENU; Audio.play('menu_confirm'); Audio.playMusic(MUSIC_MENU); }
+    if(ok) {
+      game.pendingScore = null;
+      game.state=GS.MENU; Audio.play('menu_confirm'); Audio.playMusic(MUSIC_MENU);
+    }
   } else if(game.state===GS.PAUSED) {
-    if(checkJustPressed('Escape')||ok) { game.state=GS.PLAYING; Audio.play('menu_confirm'); }
+    if(back||ok) { game.state=GS.PLAYING; Audio.play('menu_confirm'); }
   } else if(game.state===GS.PLAYING) {
-    if(checkJustPressed('Escape')) { game.state=GS.PAUSED; Audio.play('menu_move'); }
+    if(back) { game.state=GS.PAUSED; Audio.play('menu_move'); }
   }
 }
 
@@ -1895,6 +2232,7 @@ function handleMenuInput() {
    ═══════════════════════════════════════════════════════════════════════════ */
 function update() {
   handleMenuInput();
+  Toasts.update();
   // Slow-motion: stochastically skip physics ticks so time dilates smoothly.
   const ts = Camera.timeScale();
   if (game.state === GS.PLAYING && ts < 1 && Math.random() > ts) return;
@@ -1902,7 +2240,10 @@ function update() {
     game.levelClearTimer++;
     if(game.levelClearTimer>160) {
       game.level++;
-      if(game.level>game.maxLevel) { game.state=GS.VICTORY; Audio.stopMusic(); Audio.play('powerup'); }
+      if(game.level>game.maxLevel) {
+        game.state=GS.VICTORY; Audio.stopMusic(); Audio.play('powerup');
+        queueHighScoreIfQualifies();
+      }
       else {
         game.enemies=[]; game.bullets=[]; game.powerups=[];
         game.boss=null; game.bossActive=false;
@@ -1954,6 +2295,7 @@ function update() {
     game.state=GS.GAMEOVER; menuT=0;
     Audio.play('explode_big');
     Audio.stopMusic();
+    queueHighScoreIfQualifies();
   }
   // Flash
   if(game.flashTimer>0) game.flashTimer--;
@@ -1969,8 +2311,11 @@ function draw() {
   Camera.preRender(ctx, now);
   ctx.fillStyle='#000005'; ctx.fillRect(0,0,W,H);
   drawStars();
-  if(game.state===GS.MENU) { drawMenu(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
-  if(game.state===GS.MODE) { drawModeSelect(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.MENU)       { drawMenu();       ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.MODE)       { drawModeSelect(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.OPTIONS)    { drawOptions();    ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.HIGHSCORES) { drawHighScores(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
+  if(game.state===GS.NAME_ENTRY) { drawNameEntry();  ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   // Playing / paused / level clear
   particles.forEach(p=>p.draw(ctx));
   game.powerups.forEach(pu=>pu.draw(ctx));
@@ -1981,20 +2326,25 @@ function draw() {
   Confetti.draw(ctx);
   // HUD
   drawHUD();
-  // Flash message
-  if(game.flashTimer>0) {
-    const a=Math.min(1,game.flashTimer/30);
-    ctx.save(); ctx.globalAlpha=a;
-    ctx.shadowBlur=20; ctx.shadowColor='#FFB800';
-    ctx.fillStyle='#FFB800'; ctx.font='bold 18px Orbitron'; ctx.textAlign='center';
-    ctx.fillText(game.flashMsg, W/2, H/2-20);
-    ctx.restore();
-  }
   // Screen flash (legacy — Camera.flash now handles most cases)
   if(game.screenFlash>0) {
     ctx.fillStyle=`rgba(255,200,100,${game.screenFlash/15*0.4})`;
     ctx.fillRect(0,0,W,H);
   }
+  // Damage vignette on invulnerability frames + low-life pulse.
+  const anyHit = game.players.some(p => p.invTime > 0 && p.invTime < 90);
+  const anyLow = game.players.some(p => p.active && p.lives <= 1);
+  if (anyHit || anyLow) {
+    const pulse = anyLow ? (0.18 + Math.sin(performance.now()/120) * 0.08) : 0;
+    const hitA  = anyHit ? 0.38 : 0;
+    const grad = ctx.createRadialGradient(W/2,H/2,H*0.25,W/2,H/2,H*0.65);
+    grad.addColorStop(0,'rgba(255,0,32,0)');
+    grad.addColorStop(1,`rgba(255,0,32,${Math.max(hitA, pulse)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,W,H);
+  }
+  // Toasts (replaces the single flash message for stacked UX feedback)
+  Toasts.draw(ctx);
   if(game.state===GS.LEVEL_CLEAR) drawLevelClear();
   if(game.state===GS.GAMEOVER) { menuT++; drawGameOver(false); }
   if(game.state===GS.VICTORY) { menuT++; drawGameOver(true); }
