@@ -41,6 +41,45 @@ The game source code itself does not bundle any third-party runtime libraries. E
   Tomas Pettersson (original C++ sfxr).
 - **License**: MIT. See `vendor/sfxr.js/LICENSE`.
 
+### webgl-crt-shader
+
+- **Use**: GLSL fragment-shader reference. The WebGL post-process in `code`
+  implements scanlines, barrel curvature, bloom, vignette, chromatic
+  aberration, and flicker based on the techniques in
+  `vendor/webgl-crt-shader/CRTShader.js`. The implementation is fresh,
+  targets WebGL1 (not Three.js), and uses a subset of the uniform set.
+- **Runtime**: `vendor/webgl-crt-shader` is **not bundled**; only the
+  GLSL approach is credited.
+- **URL**: repository in `vendor/webgl-crt-shader/README.md`.
+- **License**: MIT. See `vendor/webgl-crt-shader/LICENSE`.
+
+### Proton (particle engine)
+
+- **Use**: design reference. The upgraded `Particle` class in `code`
+  adds trails, gravity, drag, rotation, and color-over-lifetime — all
+  concepts standard to Proton. Proton itself is an ES module tree that
+  would require a bundler; `code` stays single-file.
+- **Runtime**: Proton is **not bundled**.
+- **URL**: `vendor/Proton/README.md`.
+- **License**: MIT. See `vendor/Proton/LICENSE`.
+
+### canvas-confetti
+
+- **Use**: reference for celebration bursts. The `Confetti` module in
+  `code` is a ~40-line DIY implementation tuned for our 480×640 canvas;
+  the full library is not inlined to keep `code` small.
+- **Runtime**: canvas-confetti is **not bundled**.
+- **URL**: `vendor/canvas-confetti/README.md`.
+- **License**: ISC. See `vendor/canvas-confetti/LICENSE`.
+
+### particles.js-bg
+
+- **Use**: design reference for the parallax starfield layering.
+  `code` ships a hand-rolled 3-layer starfield + nebula.
+- **Runtime**: particles.js-bg is **not bundled**.
+- **URL**: `vendor/particles.js-bg/README.md`.
+- **License**: MIT. See `vendor/particles.js-bg/LICENSE`.
+
 ## Bundled assets
 
 *(No third-party sprites or audio samples are bundled in `code`.

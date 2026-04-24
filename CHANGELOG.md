@@ -24,6 +24,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Script reorganized into labelled sections (CONFIG, AUDIO, RENDER,
     INPUT, ENTITIES, UI, ENGINE) so later phases have clear drop-in points.
   - Build version stamp emitted to the JS console on boot.
+- **Phase 3 — graphics.**
+  - WebGL CRT post-process (`CRT` module): scanlines, barrel curvature,
+    bloom, vignette, chromatic aberration, flicker. GLSL adapted from
+    `vendor/webgl-crt-shader/CRTShader.js`; targets WebGL1 (not Three.js).
+    Toggleable via `Config.crt` (`webgl` | `css` | `off`). Falls back to
+    CSS overlay if WebGL init fails.
+  - `Camera` module: screen shake, hit flash, slow-motion, all scaled by
+    `Config.shake` / `Config.slowMo` / `Config.reducedMotion`.
+  - `Confetti` module: boss-kill and stage-clear bursts (DIY, ~40 lines).
+  - `Particle` class upgraded with trails, gravity/drag, color-over-life,
+    and streak/square/circle shapes. `explode()` now spawns both debris
+    and fast streak shards. New `thruster()` emits trailed engine
+    particles.
+  - Parallax starfield: 3 layers (far / mid / near) at different scroll
+    speeds, plus 3 soft nebula blobs behind them.
+  - Bullets now glow, leave a short trail, and have a bright core.
+  - Boss phase changes (50% HP, 25% HP) now trigger an explosion pulse,
+    camera shake, chromatic aberration, and a warn SFX.
+  - Impact hooks: bomb = shake+flash+aberration, player death =
+    shake+flash+slow-mo+aberration, enemy death = small shake,
+    boss kill = shake+flash+slow-mo+aberration+confetti.
 - **Phase 2 — sound.**
   - Inline sfxr-schema-compatible WebAudio synth (`synthSfxr`) renders
     parameter files from `assets/sfx/` into `AudioBuffer`s at boot.
