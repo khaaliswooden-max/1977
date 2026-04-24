@@ -573,6 +573,7 @@ const CRT = (() => {
     out.height = srcCanvas.height;
     gl = out.getContext('webgl', { alpha: false, antialias: false });
     if (!gl) return false;
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     const vs = compile(gl.VERTEX_SHADER, VS);
     const fs = compile(gl.FRAGMENT_SHADER, FS);
     if (!vs || !fs) return false;

@@ -63,7 +63,7 @@
    SECTION: BUILD METADATA
    ═══════════════════════════════════════════════════════════════════════════ */
 /* INLINE:VERSION */
-const BUILD_VERSION = '0.2.0-phase1+2026-04-24T20:05:46Z';
+const BUILD_VERSION = '0.2.0-phase1+2026-04-24T20:28:20Z';
 /* /INLINE */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -578,6 +578,7 @@ const CRT = (() => {
     out.height = srcCanvas.height;
     gl = out.getContext('webgl', { alpha: false, antialias: false });
     if (!gl) return false;
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     const vs = compile(gl.VERTEX_SHADER, VS);
     const fs = compile(gl.FRAGMENT_SHADER, FS);
     if (!vs || !fs) return false;
