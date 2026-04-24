@@ -27,11 +27,27 @@ The game source code itself does not bundle any third-party runtime libraries. E
 
 ## Development (not redistributed)
 
-*(Nothing yet — the project has no build step and no dev dependencies.)*
+### sfxr.js
+
+- **Use**: schema reference only. The `assets/sfx/*.json` parameter files
+  follow the sfxr parameter schema (waveType, startFrequency, slide,
+  attackTime, sustainTime, decayTime, squareDuty, vibratoDepth/Speed, etc.)
+  so contributors can author new SFX with the `vendor/sfxr.js/index.html`
+  UI and save the exported params here.
+- **Runtime**: sfxr.js is **not bundled**; a fresh WebAudio implementation
+  in `code` reads the same schema.
+- **URL**: <https://github.com/humphd/sfxr.js>
+- **Authors**: David Humphrey (JS port); Thomas Vian (ActionScript port);
+  Tomas Pettersson (original C++ sfxr).
+- **License**: MIT. See `vendor/sfxr.js/LICENSE`.
 
 ## Bundled assets
 
-*(No third-party sprites, audio, or data files are currently bundled. When one is added, append a section here with: the file path, source URL, author, license, and a copy of any required license notice.)*
+*(No third-party sprites or audio samples are bundled in `code`.
+Sound effects are synthesized at runtime from parameter files in
+`assets/sfx/`; music is synthesized procedurally in WebAudio. When an
+external asset is added, append a section here with: the file path,
+source URL, author, license, and a copy of any required license notice.)*
 
 ---
 

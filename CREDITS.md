@@ -12,10 +12,17 @@
 
 ## Music
 
+- Procedural chiptune loops (menu / stage / boss) synthesized at runtime in
+  WebAudio — no external samples, no third-party tracks.
 - *Add yourself here when you contribute music tracks.*
 
 ## Sound effects
 
+- SFX parameter schema borrowed from **sfxr.js** (MIT) by David Humphrey,
+  originally ActionScript-ported by Thomas Vian from Tomas Pettersson's
+  [sfxr](http://www.drpetter.se). The runtime synth is a fresh WebAudio
+  implementation; parameter files in `assets/sfx/` follow the sfxr schema so
+  the `vendor/sfxr.js/index.html` UI can be used to author new sounds.
 - *Add yourself here when you contribute SFX.*
 
 ## Playtesters

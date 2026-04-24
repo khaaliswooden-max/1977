@@ -24,6 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Script reorganized into labelled sections (CONFIG, AUDIO, RENDER,
     INPUT, ENTITIES, UI, ENGINE) so later phases have clear drop-in points.
   - Build version stamp emitted to the JS console on boot.
+- **Phase 2 — sound.**
+  - Inline sfxr-schema-compatible WebAudio synth (`synthSfxr`) renders
+    parameter files from `assets/sfx/` into `AudioBuffer`s at boot.
+  - 11 SFX presets: `shoot`, `shoot_powered`, `hit_enemy`, `hit_player`,
+    `explode_small`, `explode_big`, `powerup`, `bomb`, `menu_move`,
+    `menu_confirm`, `boss_warn`.
+  - WebAudio bus: master → music / sfx gain nodes, volumes driven by
+    `Config` (`volMaster`, `volMusic`, `volSfx`).
+  - `Audio.duck(amount, ms)` briefly dips the music bus on bomb / player
+    death / boss death.
+  - Procedural chiptune music engine schedules square/saw/triangle
+    oscillator notes. Three looping tracks (menu, stage, boss) swap on
+    menu → stage → boss-warn → boss-dead transitions and stop on game over.
+  - AudioContext is created lazily on first user gesture (complies with
+    browser autoplay policy) and resumes if suspended.
+  - `vendor/sfxr.js` (MIT) credited as schema source in CREDITS.md and
+    THIRD_PARTY_NOTICES.md even though its runtime code isn't bundled.
 
 ## [0.1.0] - 2026-04-24
 

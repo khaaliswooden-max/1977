@@ -111,14 +111,339 @@ function applyConfig() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SECTION: AUDIO (stub — Phase 2 inlines sfxr.js and wires WebAudio buses)
+   SECTION: AUDIO
+   Inline sfxr-compatible synth → WebAudio buses → procedural chiptune music.
+   No network, no external samples.
    ═══════════════════════════════════════════════════════════════════════════ */
-const Audio = {
-  ctx: null,
-  play: (_name) => { /* Phase 2 */ },
-  music: (_track) => { /* Phase 2 */ },
-  stopMusic: () => { /* Phase 2 */ },
-  duck: (_amount, _ms) => { /* Phase 2 */ },
+
+// SFX presets — `vendor/sfxr.js/index.html` exports this schema (subset).
+// Fields absent from a preset default to 0 (sfxr standard).
+/* INLINE:SFXR assets/sfx/shoot.json CONST SFX_SHOOT */
+const SFX_SHOOT = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/shoot_powered.json CONST SFX_SHOOT_POWERED */
+const SFX_SHOOT_POWERED = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/hit_enemy.json CONST SFX_HIT_ENEMY */
+const SFX_HIT_ENEMY = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/hit_player.json CONST SFX_HIT_PLAYER */
+const SFX_HIT_PLAYER = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/explode_small.json CONST SFX_EXPLODE_SMALL */
+const SFX_EXPLODE_SMALL = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/explode_big.json CONST SFX_EXPLODE_BIG */
+const SFX_EXPLODE_BIG = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/powerup.json CONST SFX_POWERUP */
+const SFX_POWERUP = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/bomb.json CONST SFX_BOMB */
+const SFX_BOMB = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/menu_move.json CONST SFX_MENU_MOVE */
+const SFX_MENU_MOVE = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/menu_confirm.json CONST SFX_MENU_CONFIRM */
+const SFX_MENU_CONFIRM = {};
+/* /INLINE */
+/* INLINE:SFXR assets/sfx/boss_warn.json CONST SFX_BOSS_WARN */
+const SFX_BOSS_WARN = {};
+/* /INLINE */
+
+const SFX_LIBRARY = {
+  shoot: SFX_SHOOT,
+  shoot_powered: SFX_SHOOT_POWERED,
+  hit_enemy: SFX_HIT_ENEMY,
+  hit_player: SFX_HIT_PLAYER,
+  explode_small: SFX_EXPLODE_SMALL,
+  explode_big: SFX_EXPLODE_BIG,
+  powerup: SFX_POWERUP,
+  bomb: SFX_BOMB,
+  menu_move: SFX_MENU_MOVE,
+  menu_confirm: SFX_MENU_CONFIRM,
+  boss_warn: SFX_BOSS_WARN,
+};
+
+// Inline sfxr-style synth. Renders a sfxr parameter object to a Float32Array
+// at the given sample rate. Implements wave shape, ADSR envelope, frequency
+// slide, square duty sweep, vibrato, sustain punch, low-pass filter with
+// resonance, high-pass filter, and basic repeat (phase reset).
+function synthSfxr(p, sampleRate) {
+  const SR = sampleRate;
+  const waveType   = p.waveType        || 0;
+  const attack     = p.attackTime      || 0;
+  const sustain    = p.sustainTime     || 0.3;
+  const punch      = p.sustainPunch    || 0;
+  const decay      = p.decayTime       || 0.4;
+  let   freq       = p.startFrequency  || 0.3;
+  const minFreq    = p.minFrequency    || 0;
+  let   slide      = p.slide           || 0;
+  const deltaSlide = p.deltaSlide      || 0;
+  const vibDepth   = p.vibratoDepth    || 0;
+  const vibSpeed   = p.vibratoSpeed    || 0;
+  let   duty       = p.squareDuty      || 0;
+  const dutySweep  = p.dutySweep       || 0;
+  const repeatSpd  = p.repeatSpeed     || 0;
+  const lpCut      = p.lpFilterCutoff  !== undefined ? p.lpFilterCutoff : 1;
+  const lpRes      = p.lpFilterResonance || 0;
+  const hpCut      = p.hpFilterCutoff  || 0;
+  const masterVol  = p.masterVolume    !== undefined ? p.masterVolume : 0.5;
+
+  const attackSamples  = Math.max(1, Math.floor(attack  * SR));
+  const sustainSamples = Math.max(1, Math.floor(sustain * SR));
+  const decaySamples   = Math.max(1, Math.floor(decay   * SR));
+  const totalSamples   = attackSamples + sustainSamples + decaySamples;
+  const out = new Float32Array(totalSamples);
+
+  // Low-pass state
+  let lpPos = 0, lpVel = 0;
+  const lpDamp = 5 * (1 - lpRes);
+  // High-pass state
+  let hpPos = 0;
+  // Oscillator state
+  let phase = 0;
+  // Frequency mapping: sfxr uses fOsc = 100 / (p*p + 0.001) Hz-ish.
+  // Simplified: map p in [0..1] → Hz range approx 30 Hz..8000 Hz via square law.
+  function hzOf(p) {
+    const pp = Math.max(0.01, Math.min(1, p));
+    return 40 + (pp * pp) * 7800;
+  }
+  // Repeat period in samples (0 = never repeat)
+  const repeatSamples = repeatSpd > 0 ? Math.floor((1 - repeatSpd) * 20000) + 1000 : 0;
+  let repeatCounter = 0;
+
+  let vibPhase = 0;
+
+  for (let i = 0; i < totalSamples; i++) {
+    // Repeat reset
+    if (repeatSamples > 0) {
+      repeatCounter++;
+      if (repeatCounter >= repeatSamples) {
+        repeatCounter = 0;
+        freq  = p.startFrequency || 0.3;
+        slide = p.slide || 0;
+        duty  = p.squareDuty || 0;
+      }
+    }
+    // Slide + delta slide
+    slide += deltaSlide * 0.00001;
+    freq  *= 1 + slide * 0.001;
+    if (freq < minFreq) freq = minFreq;
+    if (freq > 1) freq = 1;
+    // Vibrato
+    vibPhase += vibSpeed * 0.06;
+    const fVib = freq * (1 + Math.sin(vibPhase) * vibDepth * 0.1);
+    // Duty sweep
+    duty = Math.max(0, Math.min(0.5, duty + dutySweep * 0.00005));
+
+    // Oscillator
+    const hz = hzOf(fVib);
+    phase += hz / SR;
+    if (phase >= 1) phase -= 1;
+    let sample;
+    switch (waveType) {
+      case 1: sample = 1 - phase * 2; break;                    // saw
+      case 2: sample = Math.sin(phase * Math.PI * 2); break;    // sine
+      case 3: sample = Math.random() * 2 - 1; break;            // noise
+      default: sample = phase < duty + 0.25 ? 0.5 : -0.5;       // square
+    }
+    // Low-pass filter
+    const lpPosOld = lpPos;
+    const cutoff = lpCut * lpCut;
+    lpVel += (sample - lpPos) * cutoff;
+    lpVel -= lpVel * lpDamp * 0.01;
+    lpPos += lpVel;
+    sample = lpPos;
+    // High-pass filter (one-pole)
+    hpPos = hpPos * (1 - hpCut * 0.05) + (sample - lpPosOld);
+    sample = hpPos;
+
+    // Envelope
+    let env;
+    if (i < attackSamples) {
+      env = i / attackSamples;
+    } else if (i < attackSamples + sustainSamples) {
+      const s = (i - attackSamples) / sustainSamples;
+      env = 1 + punch * (1 - s) * 2;
+    } else {
+      env = 1 - (i - attackSamples - sustainSamples) / decaySamples;
+    }
+    out[i] = Math.max(-1, Math.min(1, sample * env * masterVol));
+  }
+  return out;
+}
+
+const Audio = (() => {
+  let ctx = null;
+  let masterGain, musicGain, sfxGain;
+  const buffers = new Map();   // name -> AudioBuffer
+  let musicNodes = null;       // active music graph { stop(), setGain() }
+  let currentTrack = null;
+  let duckTargetGain = 1;
+  let duckReleaseAt = 0;
+
+  function ensure() {
+    if (ctx) return ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    ctx = new AC();
+    masterGain = ctx.createGain();
+    musicGain  = ctx.createGain();
+    sfxGain    = ctx.createGain();
+    masterGain.gain.value = Config.get('volMaster');
+    musicGain.gain.value  = Config.get('volMusic');
+    sfxGain.gain.value    = Config.get('volSfx');
+    musicGain.connect(masterGain);
+    sfxGain.connect(masterGain);
+    masterGain.connect(ctx.destination);
+    // Pre-render all SFX buffers now that we have a sample rate.
+    for (const [name, params] of Object.entries(SFX_LIBRARY)) {
+      const pcm = synthSfxr(params, ctx.sampleRate);
+      const buf = ctx.createBuffer(1, pcm.length, ctx.sampleRate);
+      buf.copyToChannel(pcm, 0);
+      buffers.set(name, buf);
+    }
+    return ctx;
+  }
+
+  function resumeOnGesture() {
+    const resume = () => { if (ctx && ctx.state === 'suspended') ctx.resume(); };
+    ['pointerdown', 'keydown', 'touchstart'].forEach(ev => {
+      window.addEventListener(ev, resume, { once: false, passive: true });
+    });
+  }
+
+  function play(name) {
+    const c = ensure();
+    if (!c || Config.get('volMaster') <= 0) return;
+    const buf = buffers.get(name);
+    if (!buf) return;
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.connect(sfxGain);
+    src.start();
+  }
+
+  // Duck music: drop musicGain to `amount` (0..1) for `ms` then ramp back.
+  function duck(amount, ms) {
+    const c = ensure();
+    if (!c || !musicGain) return;
+    const now = c.currentTime;
+    const releaseAt = now + ms / 1000;
+    duckReleaseAt = releaseAt;
+    musicGain.gain.cancelScheduledValues(now);
+    musicGain.gain.setValueAtTime(Config.get('volMusic') * amount, now);
+    musicGain.gain.linearRampToValueAtTime(Config.get('volMusic'), releaseAt);
+  }
+
+  // Apply config volume changes live.
+  function applyVolumes() {
+    if (!ctx) return;
+    masterGain.gain.value = Config.get('volMaster');
+    if (!duckReleaseAt || ctx.currentTime > duckReleaseAt) {
+      musicGain.gain.value = Config.get('volMusic');
+    }
+    sfxGain.gain.value = Config.get('volSfx');
+  }
+
+  // Simple note-sequence music engine: schedules a loop of pitched pulses.
+  // Each track = { bpm, pattern: [[note, len], ...], wave, bass }
+  // note: midi-ish number; 0 = rest. len: beats.
+  function midiToHz(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+  function playMusic(track) {
+    if (currentTrack === track && musicNodes) return;
+    stopMusic();
+    const c = ensure();
+    if (!c) return;
+    currentTrack = track;
+    const { bpm, lead, bass, wave } = track;
+    const beat = 60 / bpm;
+    const lookahead = 0.1;
+    const scheduleAhead = 0.25;
+    let leadIdx = 0, bassIdx = 0;
+    let leadTime = c.currentTime + 0.05;
+    let bassTime = c.currentTime + 0.05;
+    let active = true;
+    const voices = [];
+
+    function scheduleNote(note, len, startAt, gainNode, waveType, vol) {
+      if (!active || note === 0) return;
+      const osc = c.createOscillator();
+      const g = c.createGain();
+      osc.type = waveType;
+      osc.frequency.value = midiToHz(note);
+      const dur = len * beat;
+      const attack = 0.01;
+      const release = Math.min(0.08, dur * 0.4);
+      g.gain.setValueAtTime(0, startAt);
+      g.gain.linearRampToValueAtTime(vol, startAt + attack);
+      g.gain.setValueAtTime(vol, startAt + Math.max(attack, dur - release));
+      g.gain.linearRampToValueAtTime(0, startAt + dur);
+      osc.connect(g); g.connect(gainNode);
+      osc.start(startAt);
+      osc.stop(startAt + dur + 0.02);
+      voices.push(osc);
+    }
+
+    const scheduler = setInterval(() => {
+      if (!active) return;
+      const now = c.currentTime;
+      while (leadTime < now + scheduleAhead) {
+        const [note, len] = lead[leadIdx % lead.length];
+        scheduleNote(note, len, leadTime, musicGain, wave.lead, 0.14);
+        leadTime += len * beat;
+        leadIdx++;
+      }
+      while (bassTime < now + scheduleAhead) {
+        const [note, len] = bass[bassIdx % bass.length];
+        scheduleNote(note, len, bassTime, musicGain, wave.bass, 0.18);
+        bassTime += len * beat;
+        bassIdx++;
+      }
+    }, lookahead * 1000);
+
+    musicNodes = {
+      stop() {
+        active = false;
+        clearInterval(scheduler);
+        voices.forEach(v => { try { v.stop(); } catch (_) {} });
+      }
+    };
+  }
+
+  function stopMusic() {
+    if (musicNodes) { musicNodes.stop(); musicNodes = null; }
+    currentTrack = null;
+  }
+
+  return { play, duck, playMusic, stopMusic, applyVolumes, resumeOnGesture, ensure };
+})();
+
+// Three procedural chiptune tracks. Notes are MIDI numbers; 0 = rest.
+const MUSIC_MENU = {
+  bpm: 96,
+  wave: { lead: 'triangle', bass: 'square' },
+  lead: [[72,0.5],[76,0.5],[79,0.5],[76,0.5],[74,0.5],[72,0.5],[76,1.0],
+         [74,0.5],[72,0.5],[69,0.5],[72,0.5],[74,1.0],[72,2.0]],
+  bass: [[48,2],[45,2],[43,2],[48,2]],
+};
+const MUSIC_STAGE = {
+  bpm: 132,
+  wave: { lead: 'square', bass: 'sawtooth' },
+  lead: [[69,0.25],[72,0.25],[76,0.25],[79,0.25],[81,0.5],[79,0.25],[76,0.25],
+         [74,0.5],[72,0.5],[69,0.25],[72,0.25],[74,0.25],[76,0.25],[77,0.5],[74,0.5],
+         [72,0.5],[69,0.5],[67,0.5],[65,0.5]],
+  bass: [[45,0.5],[45,0.5],[48,0.5],[45,0.5],[43,0.5],[43,0.5],[46,0.5],[43,0.5]],
+};
+const MUSIC_BOSS = {
+  bpm: 148,
+  wave: { lead: 'sawtooth', bass: 'square' },
+  lead: [[64,0.25],[67,0.25],[70,0.25],[67,0.25],[64,0.25],[67,0.25],[70,0.25],[72,0.5],
+         [70,0.25],[67,0.25],[64,0.5],[63,0.25],[65,0.25],[67,0.5],[70,0.5],[72,0.25],[70,0.25]],
+  bass: [[40,0.5],[40,0.5],[40,0.25],[40,0.25],[43,0.5],[42,0.5],[40,0.5]],
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -371,19 +696,24 @@ class Player {
     const c = this.pid===1 ? '#FFE066' : '#66EEFF';
     if(this.shotLevel===1) {
       bullets.push(new Bullet(this.x, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
+      Audio.play('shoot');
     } else if(this.shotLevel===2) {
       bullets.push(new Bullet(this.x-7, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
       bullets.push(new Bullet(this.x+7, this.y-this.h/2, 0, spd, c, 1, 2.5, true));
+      Audio.play('shoot');
     } else if(this.shotLevel>=3) {
       bullets.push(new Bullet(this.x, this.y-this.h/2, 0, spd, c, 1.5, 2.5, true));
       bullets.push(new Bullet(this.x-10, this.y-this.h/2, -0.5, spd, c, 1, 2, true));
       bullets.push(new Bullet(this.x+10, this.y-this.h/2,  0.5, spd, c, 1, 2, true));
+      Audio.play('shoot_powered');
     }
   }
   useBomb(bullets) {
     explode(this.x, this.y, this.color, 40, 5);
     // screen flash
     game.screenFlash = 10;
+    Audio.play('bomb');
+    Audio.duck(0.3, 600);
     // kill all enemy bullets
     game.bullets = game.bullets.filter(b => b.isPlayer);
     // damage all enemies
@@ -395,6 +725,9 @@ class Player {
     this.invTime=0;
     this.dying=60;
     explode(this.x, this.y, this.color, 50, 4);
+    Audio.play('hit_player');
+    Audio.play('explode_big');
+    Audio.duck(0.4, 500);
     if(this.lives<=0) {
       this.active=false;
       this.dead=true;
@@ -513,9 +846,11 @@ class Enemy {
   takeDamage(dmg) {
     this.hp -= dmg;
     sparkle(this.x,this.y,this.color,4);
+    Audio.play('hit_enemy');
     if(this.hp<=0) {
       this.dead=true;
       explode(this.x,this.y,this.color,30,3);
+      Audio.play('explode_small');
       return true;
     }
     return false;
@@ -637,7 +972,14 @@ class Boss {
   takeDamage(dmg) {
     if(this.entering) return false;
     this.hp-=dmg; sparkle(this.x,this.y,this.color,3);
-    if(this.hp<=0){ this.dead=true; explode(this.x,this.y,this.color,80,5); return true; }
+    Audio.play('hit_enemy');
+    if(this.hp<=0){
+      this.dead=true;
+      explode(this.x,this.y,this.color,80,5);
+      Audio.play('explode_big');
+      Audio.duck(0.3, 700);
+      return true;
+    }
     return false;
   }
   draw(ctx) {
@@ -794,6 +1136,8 @@ function startNextWave() {
     game.bossActive=true;
     game.boss = new Boss(game.level, game.diff);
     showFlash('⚠ BOSS INCOMING ⚠');
+    Audio.play('boss_warn');
+    Audio.playMusic(MUSIC_BOSS);
   }
 }
 
@@ -834,6 +1178,7 @@ function checkCollisions() {
           game.players.forEach(p=>{ if(p.active) p.score+=bx.pts; });
           game.totalScore+=bx.pts;
           game.bossActive=false;
+          Audio.playMusic(MUSIC_STAGE);
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x,bx.y,'SHIELD'));
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x+30,bx.y,'SHOT'));
           if(Math.random()<0.5) game.powerups.push(new PowerUp(bx.x-30,bx.y,'BOMB'));
@@ -877,6 +1222,7 @@ function checkCollisions() {
       if(!p.active) return;
       if(dist(pu,p)<24) {
         pu.dead=true;
+        Audio.play('powerup');
         switch(pu.type) {
           case 'SHOT': p.shotLevel=Math.min(3,p.shotLevel+1); showFlash('FIREPOWER UP!'); break;
           case 'SPEED': p.speed=Math.min(5.5,p.speed+0.5); showFlash('SPEED UP!'); break;
@@ -1082,19 +1428,24 @@ function handleMenuInput() {
   const ok = checkJustPressed('Space')||checkJustPressed('Enter')||tapFlag;
   tapFlag=false;
   if(game.state===GS.MENU) {
-    if(up) game.menuSel=Math.max(0,game.menuSel-1);
-    if(dn) game.menuSel=Math.min(2,game.menuSel+1);
-    if(ok) { game.diff=game.menuSel; game.state=GS.MODE; game.modeSel=0; }
+    if(up) { game.menuSel=Math.max(0,game.menuSel-1); Audio.play('menu_move'); }
+    if(dn) { game.menuSel=Math.min(2,game.menuSel+1); Audio.play('menu_move'); }
+    if(ok) { game.diff=game.menuSel; game.state=GS.MODE; game.modeSel=0; Audio.play('menu_confirm'); }
   } else if(game.state===GS.MODE) {
-    if(up) game.modeSel=0; if(dn) game.modeSel=1;
-    if(ok) { game.mode=game.modeSel+1; game.level=1; initGame(); game.state=GS.PLAYING;
-      document.getElementById('mobile-controls').style.display = game.isMobile||true?'block':'none'; }
+    if(up) { game.modeSel=0; Audio.play('menu_move'); }
+    if(dn) { game.modeSel=1; Audio.play('menu_move'); }
+    if(ok) {
+      game.mode=game.modeSel+1; game.level=1; initGame(); game.state=GS.PLAYING;
+      document.getElementById('mobile-controls').style.display = game.isMobile||true?'block':'none';
+      Audio.play('menu_confirm');
+      Audio.playMusic(MUSIC_STAGE);
+    }
   } else if(game.state===GS.GAMEOVER||game.state===GS.VICTORY) {
-    if(ok) { game.state=GS.MENU; }
+    if(ok) { game.state=GS.MENU; Audio.play('menu_confirm'); Audio.playMusic(MUSIC_MENU); }
   } else if(game.state===GS.PAUSED) {
-    if(checkJustPressed('Escape')||ok) game.state=GS.PLAYING;
+    if(checkJustPressed('Escape')||ok) { game.state=GS.PLAYING; Audio.play('menu_confirm'); }
   } else if(game.state===GS.PLAYING) {
-    if(checkJustPressed('Escape')) game.state=GS.PAUSED;
+    if(checkJustPressed('Escape')) { game.state=GS.PAUSED; Audio.play('menu_move'); }
   }
 }
 
@@ -1107,7 +1458,7 @@ function update() {
     game.levelClearTimer++;
     if(game.levelClearTimer>160) {
       game.level++;
-      if(game.level>game.maxLevel) { game.state=GS.VICTORY; }
+      if(game.level>game.maxLevel) { game.state=GS.VICTORY; Audio.stopMusic(); Audio.play('powerup'); }
       else {
         game.enemies=[]; game.bullets=[]; game.powerups=[];
         game.boss=null; game.bossActive=false;
@@ -1116,6 +1467,7 @@ function update() {
         game.spawnedEnemies=[...game.waves[0]];
         game.state=GS.PLAYING;
         showFlash('LEVEL '+game.level);
+        Audio.playMusic(MUSIC_STAGE);
         // Refill shield on novice between levels
         if(DIFF_CFG[game.diff].shield) game.players.forEach(p=>{ if(p.active){p.hasShield=true;p.shieldTime=600;} });
       }
@@ -1152,7 +1504,11 @@ function update() {
   checkCollisions();
   // Game over check
   const anyAlive = game.players.some(p=>p.active||p.dying>0||p.respawnTimer>0);
-  if(!anyAlive) { game.state=GS.GAMEOVER; menuT=0; }
+  if(!anyAlive) {
+    game.state=GS.GAMEOVER; menuT=0;
+    Audio.play('explode_big');
+    Audio.stopMusic();
+  }
   // Flash
   if(game.flashTimer>0) game.flashTimer--;
   if(game.screenFlash>0) game.screenFlash--;
@@ -1210,6 +1566,19 @@ document.getElementById('mobile-controls').style.display = 'block';
 
 // Apply persisted config to DOM overlays on boot.
 applyConfig();
+
+// Register audio gesture listeners and start menu music on first interaction.
+Audio.resumeOnGesture();
+const bootMusic = () => {
+  Audio.ensure();
+  Audio.playMusic(MUSIC_MENU);
+  window.removeEventListener('pointerdown', bootMusic);
+  window.removeEventListener('keydown',     bootMusic);
+  window.removeEventListener('touchstart',  bootMusic);
+};
+window.addEventListener('pointerdown', bootMusic, { once: true });
+window.addEventListener('keydown',     bootMusic, { once: true });
+window.addEventListener('touchstart',  bootMusic, { once: true });
 
 console.log('[1977] build', BUILD_VERSION);
 </script>
