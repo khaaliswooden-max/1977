@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
+
+# Blind-selection screenshots (regenerated each run; user adds MAME
+# pair manually). The directory itself stays via README.md + index.html.
+tests/blind-selection/phosphor-78/*.png
+tests/blind-selection/mame/*.png
+
+# Local Claude Code overrides
+.claude/settings.local.json
+
+# AI tooling infrastructure (BMad framework + Claude skills installed locally)
+# These are reproducible via `bmad install`; not project code
+_bmad/
+.claude/skills/

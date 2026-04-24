@@ -1,0 +1,33 @@
+{
+  "name": "phosphor-78",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "高保真浏览器版 1978 Space Invaders 复刻 — WebGL CRT shader + Web Audio 振荡器合成 + 像素级 1:1 玩法",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:e2e": "playwright test",
+    "format:md": "md-zh-format src/companion/content/*.md docs/*.zh.md README.zh.md --write --normalize-only --prose-wrap preserve",
+    "format:md:check": "md-zh-format src/companion/content/*.md docs/*.zh.md README.zh.md --check --normalize-only --prose-wrap preserve"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@jacobbubu/md-zh-format": "^1.2.0",
+    "@playwright/test": "^1.59.1",
+    "@vitest/browser": "^4.1.4",
+    "@vitest/browser-playwright": "^4.1.4",
+    "eslint": "^10.2.1",
+    "eslint-plugin-import-x": "^4.16.2",
+    "playwright": "^1.59.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.58.2",
+    "vite": "^8.0.8",
+    "vitest": "^4.1.4"
+  }
+}

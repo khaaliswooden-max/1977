@@ -1,0 +1,380 @@
+/* Companion page — minimal "technical doc" styling. The look is
+ * deliberately plain so the visualizers and live demos stand out
+ * once they land in stories 5.3-5.6.
+ */
+
+:root {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: #d8d8d8;
+  background-color: #0a0a0a;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: #111;
+  border-bottom: 1px solid #222;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  color: #00ff66;
+  text-decoration: none;
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
+.site-header nav {
+  display: flex;
+  gap: 16px;
+}
+
+.nav-link {
+  color: #888;
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.nav-link:hover {
+  color: #fff;
+  background: #1a1a1a;
+}
+
+.nav-link.active {
+  color: #00ff66;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+  gap: 32px;
+}
+
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .toc {
+    position: static;
+  }
+}
+
+.toc {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  background: #111;
+  padding: 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.toc h2 {
+  margin: 0 0 8px 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.05em;
+}
+
+.toc ol {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.toc a {
+  color: #d8d8d8;
+  text-decoration: none;
+}
+
+.toc a:hover {
+  color: #00ff66;
+}
+
+main {
+  min-width: 0;
+}
+
+main h1 {
+  color: #00ff66;
+  font-size: 1.6rem;
+  margin: 0 0 16px 0;
+}
+
+main h2 {
+  color: #fff;
+  font-size: 1.2rem;
+  margin: 32px 0 12px 0;
+  border-top: 1px solid #222;
+  padding-top: 24px;
+}
+
+main h2:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+main p {
+  margin: 0 0 16px 0;
+}
+
+main p.lede {
+  font-size: 1.05rem;
+  color: #fff;
+}
+
+/* Story 5.17: scope the inline-code pill so it doesn't apply
+ * to the <code> inside fenced <pre class="code"> blocks. The
+ * old rule made every wrapped line of a fenced block look like
+ * its own pill (inline backgrounds break per line) and added a
+ * 6px left padding only on the first line. */
+main :not(pre) > code {
+  background: #1a1a1a;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.95em;
+}
+
+main pre.code {
+  background: #1a1a1a;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+main pre.code code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: #d8d8d8;
+}
+
+main a {
+  color: #00ff66;
+}
+
+/* Placeholder for the future demo modules (story 5.3+). */
+.demo-placeholder {
+  background: #1a1a1a;
+  border: 1px dashed #333;
+  padding: 24px;
+  border-radius: 8px;
+  margin: 16px 0;
+  color: #888;
+  text-align: center;
+}
+
+/* Mini game preview (story 5.3) — small canvas embedded in the
+ * CRT shader section so visitors can watch the slider response. */
+.mini-game-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  padding: 16px;
+  background: #000;
+  border-radius: 8px;
+}
+
+#mini-game {
+  display: block;
+  max-width: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* Slider grid (story 5.3+). One row per slider: label / control /
+ * current value. */
+.slider-group {
+  display: grid;
+  grid-row-gap: 12px;
+  margin: 16px 0;
+  padding: 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  grid-column-gap: 16px;
+  font-size: 0.9rem;
+}
+
+.slider-label {
+  grid-column: 1 / -1;
+  color: #ccc;
+}
+
+.slider input[type='range'] {
+  width: 100%;
+  accent-color: #00ff66;
+}
+
+.slider-value {
+  align-self: center;
+  font-variant-numeric: tabular-nums;
+  color: #00ff66;
+  min-width: 4ch;
+  text-align: right;
+}
+
+.sub-heading {
+  margin: 0 0 8px 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+}
+
+.adsr-editor {
+  display: grid;
+  grid-row-gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #141414;
+  border-radius: 6px;
+}
+
+.audio-preview {
+  margin: 16px 0;
+  padding: 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+}
+
+.preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preview-btn {
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 6px 12px;
+  background: #222;
+  color: #ddd;
+  border: 1px solid #333;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.preview-btn:hover {
+  background: #2a2a2a;
+  color: #fff;
+  border-color: #00ff66;
+}
+
+.preview-btn.active {
+  background: #00ff66;
+  color: #000;
+  border-color: #00ff66;
+}
+
+.note {
+  font-size: 0.85rem;
+  color: #888;
+  font-style: italic;
+}
+
+.audio-clock-viz,
+.waveform-scope {
+  margin: 16px 0;
+  padding: 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+}
+
+.viz-grid {
+  display: grid;
+  grid-row-gap: 8px;
+  margin-bottom: 16px;
+  font-family: ui-monospace, monospace;
+}
+
+.viz-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  font-size: 0.95rem;
+}
+
+.viz-label {
+  color: #888;
+}
+
+.viz-value {
+  color: #00ff66;
+  font-variant-numeric: tabular-nums;
+  min-width: 8ch;
+  text-align: right;
+}
+
+.scope-canvas {
+  display: block;
+  width: 100%;
+  height: 160px;
+  background: #000;
+  border-radius: 4px;
+  margin-top: 12px;
+}
+
+/* Story 5.13: language toggle in the header. */
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.lang-switch button {
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 4px 10px;
+  background: #1a1a1a;
+  color: #888;
+  border: 0;
+  cursor: pointer;
+}
+
+.lang-switch button + button {
+  border-left: 1px solid #333;
+}
+
+.lang-switch button:hover {
+  color: #fff;
+  background: #222;
+}
+
+.lang-switch button.active {
+  background: #00ff66;
+  color: #000;
+}
+
+.page-heading {
+  margin-bottom: 16px;
+}
