@@ -1,6 +1,43 @@
 # Build & Run
 
-*1977 — Aircraft Warfare* is a single HTML file. There is no build step, no package manager, no bundler. This document covers the handful of things that are still worth documenting.
+*1977 — Aircraft Warfare* ships as a single HTML file players can open
+directly. Since **Phase 1** of the enhancement track, that file (`code`) is
+**auto-generated** from `src/game.html` by a tiny Node script (`build.mjs`).
+There is still no npm install, no bundler, and no network at build time.
+
+## Source vs. shipped artifact
+
+| Path             | Role                                                      |
+| ---------------- | --------------------------------------------------------- |
+| `src/game.html`  | **Editable source.** Contains `/* INLINE:... */` markers. |
+| `build.mjs`      | Node 18+ script that resolves markers and emits `code`.   |
+| `code`           | **Shipped artifact.** Auto-generated; do not hand-edit.   |
+| `assets/**`      | SFX params, music, sprites — inlined as data URIs.        |
+| `vendor/**`      | Third-party libs — inlined as JS by `INLINE:FILE`.        |
+
+### Rebuilding
+
+```bash
+node build.mjs
+```
+
+No arguments. Exits non-zero on missing files or malformed markers.
+
+### Marker reference
+
+All markers live inside the `<script>` block of `src/game.html` and are
+delimited by `/* /INLINE */` so rebuilds are idempotent.
+
+| Marker                                              | Emits                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------ |
+| `/* INLINE:FILE path/from/repo/root */`             | File contents pasted verbatim.                               |
+| `/* INLINE:ASSET path CONST NAME MIME audio/wav */` | `const NAME = 'data:audio/wav;base64,...';`                  |
+| `/* INLINE:SFXR path CONST NAME */`                 | `const NAME = { ...parsed sfxr JSON... };`                   |
+| `/* INLINE:VERSION */`                              | `const BUILD_VERSION = '<semver>+<iso-timestamp>';`          |
+
+Phases 2–5 will add markers for `vendor/sfxr.js`, `vendor/Proton`,
+`vendor/webgl-crt-shader`, `vendor/canvas-confetti`, `vendor/nipplejs`,
+`vendor/gamecontroller.js`, and `vendor/particles.js-bg`.
 
 ## Requirements
 
