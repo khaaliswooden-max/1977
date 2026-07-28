@@ -4,6 +4,7 @@ A retro arcade-style vertical shoot-'em-up built as a single self-contained HTML
 
 ## Features
 
+- **3D Gaussian Splat renderer** — the whole world (ships, bullets, explosions, starfield) is drawn as depth-sorted clouds of anisotropic 3D gaussians through a tilted perspective camera; waves fly in from the distance. Toggle back to the classic 2D canvas renderer in Options
 - **Single-file game** — one HTML document, zero build step, zero dependencies
 - **1P or 2P local co-op** on the same keyboard (or two touch zones on mobile)
 - **Three difficulties**: NOVICE, INTERMEDIATE, ADVANCED — tuning enemy speed, fire rate, boss HP, lives, and starting shield
@@ -50,7 +51,8 @@ See [CONTROLS.md](CONTROLS.md) for the full reference.
 ## Tech stack
 
 - Plain HTML5 + CSS + JavaScript
-- `<canvas>` 2D rendering with `image-rendering: pixelated`
+- WebGL 3D Gaussian Splatting world renderer (instanced billboards, EWA covariance projection, back-to-front premultiplied-alpha compositing) with a `<canvas>` 2D HUD composited on top
+- Classic `<canvas>` 2D renderer kept as a fallback/option, `image-rendering: pixelated`
 - Google Fonts: *Share Tech Mono*, *Orbitron*
 
 ## Project layout

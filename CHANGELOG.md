@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **3D Gaussian Splat renderer** (`GSplat`) — the whole world is now drawn as
+  clouds of anisotropic 3D gaussians using the standard 3DGS pipeline:
+  per-splat covariance Σ = R·S·Sᵀ·Rᵀ projected through the perspective
+  Jacobian, eigen-decomposed into screen-space ellipses, and composited
+  back-to-front as premultiplied-alpha billboards in a single instanced
+  WebGL draw call (WebGL2, or WebGL1 + `ANGLE_instanced_arrays`).
+  - Procedural splat-cloud models for player ships (fuselage, canopy, swept
+    wings, flickering engine flame), all five enemy types, the boss (hull,
+    reactor core, rotating arms, phase-2 shield arc), bullets (halo + hot
+    core + trail), power-ups, wrecks, and a translucent gaussian shield dome.
+  - Perspective camera with a gentle tilt down the playfield — enemy waves
+    now visibly fly in from the distance and bullets recede as they travel
+    upfield — plus subtle parallax sway that follows the player.
+  - Volumetric background: three star layers and the nebulae live at real
+    depth behind the playfield.
+  - Explosion/sparkle/thruster particles gained a z axis and burst
+    volumetrically out of the playfield plane.
+  - HUD, menus, HP bars, and pickup letters stay crisp on the 2D canvas,
+    composited over the splat scene at splat-projected positions; the CRT
+    post-process pipeline is unchanged and applies on top.
+  - New `RENDERER` option (`SPLAT3D` | `CLASSIC`) in Options; the game
+    falls back to the classic 2D canvas renderer automatically when WebGL
+    is unavailable.
+
 ### Changed
 - Shipped artifact renamed from `code` to `index.html` so GitHub Pages (and any
   other static host) serves the game at the root URL with no `/code` suffix.
