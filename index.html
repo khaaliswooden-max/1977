@@ -63,7 +63,7 @@
    SECTION: BUILD METADATA
    ═══════════════════════════════════════════════════════════════════════════ */
 /* INLINE:VERSION */
-const BUILD_VERSION = '0.3.0-gsplat+2026-07-28T06:46:59Z';
+const BUILD_VERSION = '0.3.0-gsplat+2026-07-28T06:57:03Z';
 /* /INLINE */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -960,15 +960,21 @@ const GSplat = (() => {
     return s;
   }
 
+  // Try WebGL2 first, then WebGL1 + ANGLE_instanced_arrays. Each attempt gets
+  // a fresh canvas (a canvas bound to one context kind won't hand out another),
+  // so a WebGL2 shader/link failure still falls through to the WebGL1 path.
   function init() {
+    return initContext('webgl2') || initContext('webgl');
+  }
+
+  function initContext(kind) {
     glCanvas = document.createElement('canvas');
     glCanvas.width = W; glCanvas.height = H;
     const opts = { alpha: false, antialias: false, depth: false, stencil: false };
-    gl = glCanvas.getContext('webgl2', opts);
-    isGL2 = !!gl;
-    if (!gl) {
-      gl = glCanvas.getContext('webgl', opts);
-      if (!gl) return false;
+    gl = glCanvas.getContext(kind, opts);
+    if (!gl) return false;
+    isGL2 = kind === 'webgl2';
+    if (!isGL2) {
       instExt = gl.getExtension('ANGLE_instanced_arrays');
       if (!instExt) return false;
     }
@@ -1379,14 +1385,17 @@ const GSplat = (() => {
     }
   }
 
+  // Gameplay-critical entities first: draw order comes from the global depth
+  // sort, not emission order, so if the MAX_SPLATS cap is ever hit only
+  // cosmetic particles (and the background, emitted after this) get dropped.
   function emitWorld(now) {
-    for (const p of particles) emitParticle(p);
+    for (const p of game.players) { if (p.active || p.dying > 0 || p.respawnTimer > 0) emitPlayer(p, now); }
+    for (const b of game.bullets) emitBullet(b);
+    if (game.boss && !game.boss.dead) emitBoss(game.boss, now);
+    for (const e of game.enemies) { if (!e.dead) emitEnemy(e); }
     for (const pu of game.powerups) emitPowerUp(pu);
     for (const w of game.wrecks) emitWreck(w);
-    for (const e of game.enemies) { if (!e.dead) emitEnemy(e); }
-    if (game.boss && !game.boss.dead) emitBoss(game.boss, now);
-    for (const b of game.bullets) emitBullet(b);
-    for (const p of game.players) { if (p.active || p.dying > 0 || p.respawnTimer > 0) emitPlayer(p, now); }
+    for (const p of particles) emitParticle(p);
   }
 
   // ── Frame render ──────────────────────────────────────────────────────────
@@ -1454,9 +1463,9 @@ const GSplat = (() => {
     updateStarfield();
     updateSway(inWorld, now);
     count = 0;
+    if (inWorld) emitWorld(now);
     emitNebulae();
     emitStars();
-    if (inWorld) emitWorld(now);
     render();
     ctx.drawImage(glCanvas, 0, 0);
   }
