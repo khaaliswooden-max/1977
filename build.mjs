@@ -42,7 +42,7 @@ function readBinaryFromRepo(p) {
 }
 
 function buildVersion() {
-  const pkg = { version: '0.2.0-phase1' };
+  const pkg = { version: '0.3.0-gsplat' };
   const stamp = new Date().toISOString().slice(0, 19) + 'Z';
   return `${pkg.version}+${stamp}`;
 }

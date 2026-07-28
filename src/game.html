@@ -82,6 +82,7 @@ const DIFF_CFG = [
    ═══════════════════════════════════════════════════════════════════════════ */
 const CONFIG_KEY = 'aw1977.config.v1';
 const CONFIG_DEFAULTS = Object.freeze({
+  renderer: 'splat3d',    // 'splat3d' (3D Gaussian Splatting) | 'classic' (2D canvas)
   crt: 'webgl',           // 'webgl' | 'css' | 'off'
   shake: 0.8,             // screen-shake multiplier
   slowMo: true,           // slow-motion on player death / boss kill
@@ -802,10 +803,25 @@ const NEBULAE = Array.from({length:3}, () => ({
   spd:rnd(0.05,0.12),
 }));
 
-function drawStarLayer(layer) {
+function updateStarLayer(layer) {
   layer.forEach(s => {
     s.y += s.spd;
     if(s.y > H) { s.y = -2; s.x = rnd(0,W); }
+  });
+}
+
+function updateStarfield() {
+  NEBULAE.forEach(n => {
+    n.y += n.spd;
+    if (n.y > H + n.r) { n.y = -n.r; n.x = rnd(0,W); }
+  });
+  updateStarLayer(STARS_FAR);
+  updateStarLayer(STARS_MID);
+  updateStarLayer(STARS_NEAR);
+}
+
+function drawStarLayer(layer) {
+  layer.forEach(s => {
     ctx.fillStyle = s.hue.length === 7
       ? `rgba(${parseInt(s.hue.slice(1,3),16)},${parseInt(s.hue.slice(3,5),16)},${parseInt(s.hue.slice(5,7),16)},${s.bright})`
       : s.hue;
@@ -814,10 +830,13 @@ function drawStarLayer(layer) {
 }
 
 function drawStars() {
+  // In splat mode the background is rendered (and the field advanced) by
+  // GSplat.frame() once per rAF; menu screens that call drawStars() get it
+  // for free underneath, so this becomes a no-op.
+  if (GSplat.active()) return;
+  updateStarfield();
   // Nebulae — soft background blobs
   NEBULAE.forEach(n => {
-    n.y += n.spd;
-    if (n.y > H + n.r) { n.y = -n.r; n.x = rnd(0,W); }
     const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
     grad.addColorStop(0, n.hue + 'AA');
     grad.addColorStop(1, n.hue + '00');
@@ -830,20 +849,704 @@ function drawStars() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: RENDER — GSPLAT (3D Gaussian Splatting renderer)
+   Every world element — ships, bullets, explosions, the starfield — is a
+   cloud of anisotropic 3D gaussians, rendered with the standard 3DGS
+   pipeline: per-splat covariance Σ = R·S·Sᵀ·Rᵀ is projected through the
+   perspective Jacobian (Σ' = J·W·Σ·Wᵀ·Jᵀ), eigen-decomposed into a
+   screen-space ellipse, and composited back-to-front as premultiplied-alpha
+   gaussian billboards (one instanced draw call per frame).
+   Game logic stays 2D; a perspective camera with a gentle tilt looks down
+   the playfield so waves fly in from the distance. HUD/menus remain on the
+   2D canvas, composited on top, so the CRT post-process is untouched.
+   Toggled via Options → RENDERER (SPLAT3D | CLASSIC).
+   ═══════════════════════════════════════════════════════════════════════════ */
+const GSplat = (() => {
+  // ── Camera ────────────────────────────────────────────────────────────────
+  const TILT = 0.16;                 // rad — playfield recedes toward the top
+  const CAM_DIST = 740;              // camera distance to playfield center
+  const FOVY = 50 * Math.PI / 180;
+  const FOCAL = (H / 2) / Math.tan(FOVY / 2);
+  const ST = Math.sin(TILT), CT = Math.cos(TILT);
+  let swayX = 0, swayY = 0;          // parallax sway (smoothed)
+
+  // ── GL state ──────────────────────────────────────────────────────────────
+  const MAX_SPLATS = 12000;
+  const STRIDE = 14;                 // floats: center(3) scale(3) quat(4) rgba(4)
+  let glCanvas, gl, prog, quadBuf, instBuf, uniforms, instExt, isGL2;
+  let supported = null;              // null = not probed yet
+  const data = new Float32Array(MAX_SPLATS * STRIDE);
+  const sortedData = new Float32Array(MAX_SPLATS * STRIDE);
+  const keys = new Float32Array(MAX_SPLATS);
+  let count = 0;
+
+  const VS = `
+    precision highp float;
+    attribute vec2 aCorner;
+    attribute vec3 aCenter;
+    attribute vec3 aScale;
+    attribute vec4 aQuat;
+    attribute vec4 aColor;
+    uniform mat4 uView;
+    uniform mat4 uProj;
+    uniform vec2 uFocal;
+    uniform vec2 uViewport;
+    varying vec4 vColor;
+    varying vec2 vPos;
+    void main() {
+      vec4 cam = uView * vec4(aCenter, 1.0);
+      if (cam.z > -30.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+      // Rotation from quaternion
+      float x = aQuat.x, y = aQuat.y, z = aQuat.z, w = aQuat.w;
+      mat3 R = mat3(
+        1.0-2.0*(y*y+z*z), 2.0*(x*y+w*z),     2.0*(x*z-w*y),
+        2.0*(x*y-w*z),     1.0-2.0*(x*x+z*z), 2.0*(y*z+w*x),
+        2.0*(x*z+w*y),     2.0*(y*z-w*x),     1.0-2.0*(x*x+y*y));
+      mat3 S = mat3(aScale.x,0.,0., 0.,aScale.y,0., 0.,0.,aScale.z);
+      float iz = 1.0 / cam.z;
+      mat3 J = mat3(
+        uFocal.x*iz, 0.0, 0.0,
+        0.0, uFocal.y*iz, 0.0,
+        -uFocal.x*cam.x*iz*iz, -uFocal.y*cam.y*iz*iz, 0.0);
+      mat3 B = J * mat3(uView) * R * S;
+      // 2D covariance = B·Bᵀ (only the upper-left 2×2 survives J)
+      vec3 r0 = vec3(B[0][0], B[1][0], B[2][0]);
+      vec3 r1 = vec3(B[0][1], B[1][1], B[2][1]);
+      float a = dot(r0, r0) + 0.3;
+      float b = dot(r0, r1);
+      float c = dot(r1, r1) + 0.3;
+      float mid = 0.5 * (a + c);
+      float disc = sqrt(max(0.01, mid * mid - (a * c - b * b)));
+      float l1 = mid + disc, l2 = max(mid - disc, 0.01);
+      vec2 e1 = (abs(b) < 1e-6)
+        ? ((a >= c) ? vec2(1.0, 0.0) : vec2(0.0, 1.0))
+        : normalize(vec2(b, l1 - a));
+      vec2 e2 = vec2(-e1.y, e1.x);
+      float r1px = min(3.0 * sqrt(l1), 420.0);
+      float r2px = min(3.0 * sqrt(l2), 420.0);
+      vec2 offsetPx = aCorner.x * r1px * e1 + aCorner.y * r2px * e2;
+      vec4 clip = uProj * cam;
+      clip.xy += offsetPx / (0.5 * uViewport) * clip.w;
+      gl_Position = clip;
+      vColor = aColor;
+      vPos = aCorner * 3.0;   // quad spans ±3σ
+    }`;
+  const FS = `
+    precision mediump float;
+    varying vec4 vColor;
+    varying vec2 vPos;
+    void main() {
+      float r2 = dot(vPos, vPos);
+      if (r2 > 9.0) discard;
+      float g = exp(-0.5 * r2) * vColor.a;
+      if (g < 0.004) discard;
+      gl_FragColor = vec4(vColor.rgb * g, g);
+    }`;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.warn('[GSplat] shader error:', gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    }
+    return s;
+  }
+
+  function init() {
+    glCanvas = document.createElement('canvas');
+    glCanvas.width = W; glCanvas.height = H;
+    const opts = { alpha: false, antialias: false, depth: false, stencil: false };
+    gl = glCanvas.getContext('webgl2', opts);
+    isGL2 = !!gl;
+    if (!gl) {
+      gl = glCanvas.getContext('webgl', opts);
+      if (!gl) return false;
+      instExt = gl.getExtension('ANGLE_instanced_arrays');
+      if (!instExt) return false;
+    }
+    const vs = compile(gl.VERTEX_SHADER, VS);
+    const fs = compile(gl.FRAGMENT_SHADER, FS);
+    if (!vs || !fs) return false;
+    prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.bindAttribLocation(prog, 0, 'aCorner');
+    gl.bindAttribLocation(prog, 1, 'aCenter');
+    gl.bindAttribLocation(prog, 2, 'aScale');
+    gl.bindAttribLocation(prog, 3, 'aQuat');
+    gl.bindAttribLocation(prog, 4, 'aColor');
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.warn('[GSplat] link error:', gl.getProgramInfoLog(prog));
+      return false;
+    }
+    quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    instBuf = gl.createBuffer();
+    uniforms = {};
+    for (const n of ['uView','uProj','uFocal','uViewport'])
+      uniforms[n] = gl.getUniformLocation(prog, n);
+    gl.useProgram(prog);
+    // Static projection
+    const near = 20, far = 5000, aspect = W / H;
+    const f = 1 / Math.tan(FOVY / 2);
+    gl.uniformMatrix4fv(uniforms.uProj, false, new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far + near) / (near - far), -1,
+      0, 0, 2 * far * near / (near - far), 0,
+    ]));
+    gl.uniform2f(uniforms.uFocal, FOCAL, FOCAL);
+    gl.uniform2f(uniforms.uViewport, W, H);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clearColor(0, 0, 0.02, 1);
+    return true;
+  }
+
+  function ensure() {
+    if (supported === null) {
+      supported = false;
+      try { supported = init(); } catch (e) { console.warn('[GSplat] init failed:', e); }
+      if (!supported) console.warn('[GSplat] unavailable — falling back to classic renderer');
+    }
+    return supported;
+  }
+
+  function active() {
+    if (Config.get('renderer') !== 'splat3d') return false;
+    return ensure();
+  }
+
+  // ── Splat sink ────────────────────────────────────────────────────────────
+  // World frame: x right, y DOWN (game coords), z up out of the playfield.
+  function push(x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b, a) {
+    if (count >= MAX_SPLATS) return;
+    const o = count * STRIDE;
+    data[o] = x; data[o+1] = y; data[o+2] = z;
+    data[o+3] = sx; data[o+4] = sy; data[o+5] = sz;
+    data[o+6] = qx; data[o+7] = qy; data[o+8] = qz; data[o+9] = qw;
+    data[o+10] = r; data[o+11] = g; data[o+12] = b; data[o+13] = a;
+    keys[count] = ST * y + CT * z;   // view-space depth (constants dropped)
+    count++;
+  }
+
+  // Emit a prebuilt model at (gx,gy,gz), spun `rot` about z, scaled, faded.
+  function pushModel(m, gx, gy, gz, rot, scl, alpha) {
+    if (rot === 0) {
+      for (let i = 0; i < m.length; i += STRIDE) {
+        push(gx + m[i]*scl, gy + m[i+1]*scl, gz + m[i+2]*scl,
+             m[i+3]*scl, m[i+4]*scl, m[i+5]*scl,
+             m[i+6], m[i+7], m[i+8], m[i+9],
+             m[i+10], m[i+11], m[i+12], m[i+13]*alpha);
+      }
+      return;
+    }
+    const cs = Math.cos(rot), sn = Math.sin(rot);
+    const s2 = Math.sin(rot / 2), c2 = Math.cos(rot / 2);
+    for (let i = 0; i < m.length; i += STRIDE) {
+      const px = m[i]*scl, py = m[i+1]*scl;
+      const qx = m[i+6], qy = m[i+7], qz = m[i+8], qw = m[i+9];
+      push(gx + px*cs - py*sn, gy + px*sn + py*cs, gz + m[i+2]*scl,
+           m[i+3]*scl, m[i+4]*scl, m[i+5]*scl,
+           c2*qx - s2*qy, c2*qy + s2*qx, c2*qz + s2*qw, c2*qw - s2*qz,
+           m[i+10], m[i+11], m[i+12], m[i+13]*alpha);
+    }
+  }
+
+  // ── Color / model helpers ─────────────────────────────────────────────────
+  const hexCache = {};
+  function hex(h) {
+    let c = hexCache[h];
+    if (!c) {
+      c = hexCache[h] = [
+        parseInt(h.slice(1,3),16)/255,
+        parseInt(h.slice(3,5),16)/255,
+        parseInt(h.slice(5,7),16)/255];
+    }
+    return c;
+  }
+  const QI = [0, 0, 0, 1];   // identity quat
+
+  // sp(model, x,y,z, sx,sy,sz, colorHexOrRgb, alpha[, quat]) — model builder
+  function sp(m, x, y, z, sx, sy, sz, c, a, q) {
+    const rgb = typeof c === 'string' ? hex(c) : c;
+    q = q || QI;
+    m.push(x, y, z, sx, sy, sz, q[0], q[1], q[2], q[3], rgb[0], rgb[1], rgb[2], a);
+  }
+  function shade(c, k) {
+    const rgb = typeof c === 'string' ? hex(c) : c;
+    return [Math.min(1, rgb[0]*k), Math.min(1, rgb[1]*k), Math.min(1, rgb[2]*k)];
+  }
+
+  // ── Entity models (built once; positions in game orientation: -y = nose) ──
+  function buildShip(color, engine) {
+    const m = [];
+    // Fuselage spine, nose to tail
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5;
+      sp(m, 0, -14 + t*24, 2.5, 3.6 - t*1.0, 4.4, 2.6, shade(color, 1.15 - t*0.35), 0.92);
+    }
+    // Canopy
+    sp(m, 0, -5, 4.5, 2.0, 3.0, 2.0, '#AEDCFF', 0.95);
+    sp(m, 0, -6, 5.2, 0.9, 1.5, 1.0, '#FFFFFF', 0.9);
+    // Swept wings
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 5; i++) {
+        const t = i / 4;
+        sp(m, side*(3.5 + t*8.5), 1 + t*8.5, 1.5, 3.2 - t*1.5, 3.4 - t*1.2, 1.5, shade(color, 0.9 - t*0.25), 0.85);
+      }
+      sp(m, side*12.5, 10, 1.8, 1.1, 1.1, 1.1, '#FFFFFF', 0.9);    // wingtip light
+      sp(m, side*3.5, 11.5, 2.5, 1.5, 2.4, 1.6, shade(color, 0.75), 0.8); // tail fins
+    }
+    // Engine glow
+    sp(m, 0, 12.5, 2, 2.6, 3.4, 2.0, engine, 0.85);
+    return m;
+  }
+
+  function buildEnemy(type, color) {
+    const m = [];
+    switch (type) {
+      case 'basic':   // triangle, nose toward player (+y)
+        for (let i = 0; i < 4; i++) {
+          const t = i / 3;
+          sp(m, 0, 9 - t*17, 2, 2.2 + t*6.5, 3.4, 2.2, shade(color, 1.1 - t*0.35), 0.9);
+        }
+        sp(m, 0, 4, 3.5, 1.6, 1.6, 1.4, shade(color, 1.6), 0.9);   // hot nose
+        break;
+      case 'weaver':  // bat-wing crescent
+        for (const side of [-1, 1]) {
+          for (let i = 0; i < 3; i++) {
+            const t = i / 2;
+            sp(m, side*(2.5 + t*6.5), -2 - t*5, 2, 3.0 - t*0.8, 3.2 - t*0.9, 1.8, shade(color, 1.05 - t*0.3), 0.88);
+          }
+        }
+        sp(m, 0, 4, 2.5, 3.2, 3.6, 2.2, shade(color, 1.25), 0.92);  // core
+        break;
+      case 'bomber':  // fat saucer
+        for (let i = 0; i < 8; i++) {
+          const a = i * Math.PI / 4;
+          sp(m, Math.cos(a)*11, Math.sin(a)*8.5, 2, 5.0, 4.4, 2.6, shade(color, 0.95), 0.8);
+        }
+        sp(m, 0, 0, 3, 7.5, 6.5, 3.2, shade(color, 1.1), 0.85);
+        sp(m, 0, 0, 5, 3.4, 3.0, 2.0, '#660044', 0.95);            // dark core
+        sp(m, -5, 9, 2, 1.4, 1.8, 1.2, '#FF8866', 0.85);           // engines
+        sp(m,  5, 9, 2, 1.4, 1.8, 1.2, '#FF8866', 0.85);
+        break;
+      case 'kamikaze': // hot little dart
+        for (let i = 0; i < 3; i++) {
+          const t = i / 2;
+          sp(m, 0, 7 - t*13, 2, 1.8 + t*3.2, 3.0, 1.8, shade(color, 1.25 - t*0.4), 0.9);
+        }
+        sp(m, 0, 6, 2.5, 1.6, 2.8, 1.6, '#FFFFFF', 0.75);          // hot tip
+        sp(m, 0, -8, 2, 2.2, 4.5, 1.8, '#FF6600', 0.5);            // exhaust
+        break;
+      case 'elite':   // spinning hex ring
+        for (let i = 0; i < 6; i++) {
+          const a = i * Math.PI / 3;
+          sp(m, Math.cos(a)*11, Math.sin(a)*10, 2, 3.0, 3.0, 2.2, shade(color, 1.05), 0.9);
+          sp(m, Math.cos(a + Math.PI/6)*7, Math.sin(a + Math.PI/6)*6.5, 2, 2.0, 2.0, 1.6, shade(color, 0.7), 0.7);
+        }
+        sp(m, 0, 0, 3.5, 3.6, 3.6, 2.6, '#FFFFFF', 0.85);          // bright core
+        break;
+    }
+    return m;
+  }
+
+  function buildBossHull(color) {
+    const m = [];
+    // Broad hull slab (trapezoid, wide at mid, tapering down-screen)
+    for (let iy = 0; iy < 4; iy++) {
+      const t = iy / 3;
+      const y = -26 + t * 52;
+      const halfW = 38 - Math.abs(t - 0.35) * 26;
+      const n = 5;
+      for (let ix = 0; ix < n; ix++) {
+        const fx = n === 1 ? 0 : (ix / (n - 1) - 0.5) * 2;
+        sp(m, fx * halfW, y, 3, 10.5, 9.0, 4.5, shade(color, 1.05 - Math.abs(fx)*0.3 - t*0.15), 0.8);
+      }
+    }
+    // Dark reactor core + white ring
+    sp(m, 0, 0, 7, 9.5, 7.5, 4.0, '#100208', 0.97);
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      sp(m, Math.cos(a)*15, Math.sin(a)*11, 8, 1.7, 1.7, 1.4, '#FFFFFF', 0.9);
+    }
+    return m;
+  }
+
+  function buildPowerUp(color) {
+    const m = [];
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      sp(m, Math.cos(a)*11, Math.sin(a)*11, 0, 2.2, 2.2, 1.8, color, 0.8);
+    }
+    sp(m, 0, 0, 1, 4.5, 4.5, 3.5, shade(color, 1.3), 0.5);
+    sp(m, 0, 0, 2, 1.8, 1.8, 1.5, '#FFFFFF', 0.55);
+    return m;
+  }
+
+  function buildWreck(color) {
+    const m = [];
+    const pts = [[-11,-3],[7,-9],[11,5],[-5,7],[0,-2],[-8,3],[5,0]];
+    pts.forEach(([x, y], i) => {
+      sp(m, x, y, 1.5, 2.6, 2.4, 1.6, i % 2 ? shade(color, 0.55) : '#556066', 0.75);
+    });
+    sp(m, 2, -3, 3, 1.4, 1.4, 1.2, '#FFAA55', 0.6);   // smoldering ember
+    return m;
+  }
+
+  const MODELS = {};
+  function buildModels() {
+    MODELS.player1 = buildShip('#FFB800', '#FFA000');
+    MODELS.player2 = buildShip('#44AAFF', '#33AAFF');
+    for (const t of ['basic','weaver','bomber','kamikaze','elite'])
+      MODELS['enemy_' + t] = null; // built lazily with the type's color below
+    MODELS.enemy_basic    = buildEnemy('basic',    '#FF6633');
+    MODELS.enemy_weaver   = buildEnemy('weaver',   '#FF33AA');
+    MODELS.enemy_bomber   = buildEnemy('bomber',   '#AA44FF');
+    MODELS.enemy_kamikaze = buildEnemy('kamikaze', '#FFAA00');
+    MODELS.enemy_elite    = buildEnemy('elite',    '#00FFAA');
+    MODELS.powerups = {};
+    MODELS.wrecks = {};
+    MODELS.bosses = {};
+  }
+  buildModels();
+
+  // ── Emitters (pure readers of game state) ─────────────────────────────────
+  const STAR_DEPTHS = { far: -260, mid: -140, near: -50 };
+
+  function widen(gx, gy, depth) {
+    const k = (CAM_DIST + depth) / CAM_DIST * 1.25;
+    return [W/2 + (gx - W/2) * k, H/2 + (gy - H/2) * k];
+  }
+
+  function emitStars() {
+    for (const [layer, depth] of [[STARS_FAR, STAR_DEPTHS.far], [STARS_MID, STAR_DEPTHS.mid], [STARS_NEAR, STAR_DEPTHS.near]]) {
+      for (const s of layer) {
+        const [x, y] = widen(s.x, s.y, -depth);
+        const c = hex(s.hue);
+        push(x, y, depth, s.sz * 0.55, s.sz * 1.1, s.sz * 0.5, 0, 0, 0, 1, c[0], c[1], c[2], s.bright);
+      }
+    }
+  }
+
+  function emitNebulae() {
+    for (const n of NEBULAE) {
+      if (!n._blob) {
+        n._blob = Array.from({length: 5}, () => ({
+          ox: rnd(-0.5, 0.5) * n.r, oy: rnd(-0.5, 0.5) * n.r,
+          s: rnd(0.45, 0.8) * n.r, a: rnd(0.09, 0.17), k: rnd(0.8, 1.6),
+        }));
+      }
+      const c = hex(n.hue);
+      for (const b of n._blob) {
+        const [x, y] = widen(n.x + b.ox, n.y + b.oy, 320);
+        push(x, y, -320, b.s, b.s, b.s * 0.5, 0, 0, 0, 1, c[0]*b.k, c[1]*b.k, c[2]*b.k, b.a);
+      }
+    }
+  }
+
+  function emitParticle(p) {
+    const a = Math.max(0, p.life / p.maxLife);
+    if (a <= 0) return;
+    let r = p._rgb[0], g = p._rgb[1], b = p._rgb[2];
+    if (p._rgbEnd) {
+      const t = 1 - a;
+      r += (p._rgbEnd[0] - r) * t; g += (p._rgbEnd[1] - g) * t; b += (p._rgbEnd[2] - b) * t;
+    }
+    const s = Math.max(0.5, p.sz * a * 1.5);
+    if (p.shape === 'streak') {
+      const spd = Math.hypot(p.vx, p.vy);
+      const rot = Math.atan2(-p.vx, p.vy);
+      const s2 = Math.sin(rot/2), c2 = Math.cos(rot/2);
+      push(p.x, p.y, 4 + p.z, s * 0.6, s * (1.5 + spd * 0.8), s * 0.6, 0, 0, s2, c2, r, g, b, a * 0.9);
+    } else {
+      push(p.x, p.y, 4 + p.z, s, s, s, 0, 0, 0, 1, r, g, b, a * 0.85);
+    }
+  }
+
+  function emitBullet(b) {
+    const c = hex(b.color);
+    const spd = Math.hypot(b.vx, b.vy);
+    const rot = Math.atan2(-b.vx, b.vy);
+    const s2 = Math.sin(rot/2), c2 = Math.cos(rot/2);
+    const stretch = 1 + spd * 0.055;
+    // halo
+    push(b.x, b.y, 8, b.sz * 1.3, b.sz * 2.3 * stretch, b.sz * 1.3, 0, 0, s2, c2, c[0], c[1], c[2], 0.42);
+    // hot core
+    push(b.x, b.y, 9, b.sz * 0.55, b.sz * 1.4 * stretch, b.sz * 0.55, 0, 0, s2, c2, 1, 1, 1, 0.9);
+    // trail
+    push(b.x - b.vx * 1.5, b.y - b.vy * 1.5, 8, b.sz * 0.7, b.sz * 0.9 + spd * 0.35, b.sz * 0.7, 0, 0, s2, c2, c[0], c[1], c[2], 0.16);
+  }
+
+  function emitPowerUp(pu) {
+    const c = pu.colors[pu.type];
+    let m = MODELS.powerups[pu.type];
+    if (!m) m = MODELS.powerups[pu.type] = buildPowerUp(c);
+    const pulse = 1 + Math.sin(pu.t * 0.15) * 0.14;
+    pushModel(m, pu.x, pu.y, 8, pu.t * 0.045, pulse, 1);
+  }
+
+  function emitWreck(w) {
+    let m = MODELS.wrecks[w.pid];
+    if (!m) m = MODELS.wrecks[w.pid] = buildWreck(w.color);
+    const blink = Math.sin(w.t * 0.2) * 0.25 + 0.75;
+    pushModel(m, w.x, w.y, 3, 0, 1, Math.min(1, w.life / 60) * blink);
+    if (w.reviveProgress > 0) {
+      // rising revival motes
+      const n = 5;
+      for (let i = 0; i < n; i++) {
+        const a = (w.t * 0.05 + i * Math.PI * 2 / n);
+        const c = hex('#FFEEBB');
+        push(w.x + Math.cos(a) * 20, w.y + Math.sin(a) * 20, 4 + ((w.t * 0.7 + i * 9) % 22),
+             1.6, 1.6, 1.6, 0, 0, 0, 1, c[0], c[1], c[2], 0.7);
+      }
+    }
+  }
+
+  function emitEnemy(e) {
+    const rot = e.type === 'elite' ? e.t * 0.03 : 0;
+    pushModel(MODELS['enemy_' + e.type], e.x, e.y, 6, rot, 1, 1);
+  }
+
+  function emitBoss(bs, now) {
+    let hull = MODELS.bosses[bs.color];
+    if (!hull) hull = MODELS.bosses[bs.color] = buildBossHull(bs.color);
+    pushModel(hull, bs.x, bs.y, 8, 0, 1, 1);
+    const c = hex(bs.color);
+    // Rotating arms + orbs
+    for (let i = 0; i < 4; i++) {
+      const a = bs.armAngle + i * Math.PI / 2;
+      const ex = Math.cos(a) * bs.w * 0.7, ey = Math.sin(a) * bs.h * 0.7;
+      for (let j = 1; j <= 4; j++) {
+        const t = j / 4;
+        push(bs.x + ex * t, bs.y + ey * t, 9, 2.8 - t, 2.8 - t, 2.0, 0, 0, 0, 1, c[0], c[1], c[2], 0.8);
+      }
+      push(bs.x + ex, bs.y + ey, 10, 4.2, 4.2, 3.2, 0, 0, 0, 1,
+           Math.min(1, c[0]*1.4), Math.min(1, c[1]*1.4), Math.min(1, c[2]*1.4), 0.9);
+    }
+    // Phase-2 rotating shield arc
+    if (bs.phase >= 2) {
+      const sc = hex('#FF6432');
+      for (let i = 0; i < 14; i++) {
+        const a = bs.shieldArc + (i / 13) * Math.PI * 1.5;
+        push(bs.x + Math.cos(a) * bs.w * 0.9, bs.y + Math.sin(a) * bs.h * 0.85, 10,
+             3.6, 3.6, 2.8, 0, 0, 0, 1, sc[0], sc[1], sc[2], 0.5);
+      }
+    }
+    // Core throb
+    const throb = 0.7 + Math.sin(now * 0.006) * 0.3;
+    push(bs.x, bs.y, 11, 4.5, 4.0, 3.0, 0, 0, 0, 1, 1, 1, 1, 0.5 * throb);
+  }
+
+  function emitPlayer(p, now) {
+    if (p.respawnTimer > 0) return;
+    let alpha = 1, scl = 1;
+    if (p.dying > 0) {
+      alpha = p.dying / 60;
+      scl = 1 + (1 - alpha) * 0.5;
+    } else if (p.invTime > 0 && Math.floor(p.invTime / 5) % 2 === 0) {
+      alpha = 0.3;
+    }
+    pushModel(p.pid === 1 ? MODELS.player1 : MODELS.player2, p.x, p.y, 6, 0, scl, alpha);
+    if (p.dying === 0) {
+      // Engine flame — flickering elongated splat
+      const flame = 10 + Math.sin(p.t * 0.4) * 5;
+      const ec = hex(p.pid === 1 ? '#FFA000' : '#33AAFF');
+      push(p.x, p.y + p.h/2 + flame*0.5, 5, 3.2, flame * 0.75, 2.4, 0, 0, 0, 1, ec[0], ec[1], ec[2], 0.75 * alpha);
+      push(p.x, p.y + p.h/2 + 3, 6, 1.6, 3.5, 1.6, 0, 0, 0, 1, 1, 1, 0.9, 0.7 * alpha);
+      // Shield — translucent gaussian dome + ring
+      if (p.hasShield) {
+        const sc = hex('#4488FF');
+        const rr = p.h * 0.7;
+        push(p.x, p.y, 8, rr * 0.75, rr * 0.75, rr * 0.55, 0, 0, 0, 1, sc[0], sc[1], sc[2], 0.16);
+        for (let i = 0; i < 10; i++) {
+          const a = now * 0.002 + i * Math.PI / 5;
+          push(p.x + Math.cos(a) * rr, p.y + Math.sin(a) * rr, 7, 1.8, 1.8, 1.6, 0, 0, 0, 1, sc[0], sc[1], sc[2], 0.55);
+        }
+      }
+    }
+  }
+
+  function emitWorld(now) {
+    for (const p of particles) emitParticle(p);
+    for (const pu of game.powerups) emitPowerUp(pu);
+    for (const w of game.wrecks) emitWreck(w);
+    for (const e of game.enemies) { if (!e.dead) emitEnemy(e); }
+    if (game.boss && !game.boss.dead) emitBoss(game.boss, now);
+    for (const b of game.bullets) emitBullet(b);
+    for (const p of game.players) { if (p.active || p.dying > 0 || p.respawnTimer > 0) emitPlayer(p, now); }
+  }
+
+  // ── Frame render ──────────────────────────────────────────────────────────
+  function updateSway(inWorld, now) {
+    let tx = 0, ty = 0;
+    if (inWorld) {
+      const alive = game.players.filter(p => p.active && !p.dying);
+      if (alive.length) {
+        const avgX = alive.reduce((s, p) => s + p.x, 0) / alive.length;
+        const avgY = alive.reduce((s, p) => s + p.y, 0) / alive.length;
+        tx = (avgX - W/2) * 0.09;
+        ty = (avgY - H/2) * -0.035;
+      }
+    } else {
+      tx = Math.sin(now * 0.00015) * 14;
+      ty = Math.cos(now * 0.00011) * 7;
+    }
+    swayX += (tx - swayX) * 0.04;
+    swayY += (ty - swayY) * 0.04;
+  }
+
+  function render() {
+    // Sort back-to-front and build the interleaved instance buffer
+    const idx = new Array(count);
+    for (let i = 0; i < count; i++) idx[i] = i;
+    idx.sort((a, b) => keys[a] - keys[b]);
+    for (let i = 0; i < count; i++) {
+      const src = idx[i] * STRIDE, dst = i * STRIDE;
+      for (let j = 0; j < STRIDE; j++) sortedData[dst + j] = data[src + j];
+    }
+    gl.viewport(0, 0, W, H);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog);
+    // View matrix: game coords → camera space (y-flip + tilt + dolly)
+    const cx = W/2, cy = H/2;
+    gl.uniformMatrix4fv(uniforms.uView, false, new Float32Array([
+      1, 0, 0, 0,
+      0, -CT, ST, 0,
+      0, ST, CT, 0,
+      -cx - swayX, CT * cy - swayY, -ST * cy - CAM_DIST, 1,
+    ]));
+    const divisor = isGL2
+      ? (loc, d) => gl.vertexAttribDivisor(loc, d)
+      : (loc, d) => instExt.vertexAttribDivisorANGLE(loc, d);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    divisor(0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, sortedData.subarray(0, count * STRIDE), gl.DYNAMIC_DRAW);
+    const strideBytes = STRIDE * 4;
+    const attrs = [[1, 3, 0], [2, 3, 12], [3, 4, 24], [4, 4, 40]];
+    for (const [loc, size, off] of attrs) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, strideBytes, off);
+      divisor(loc, 1);
+    }
+    if (isGL2) gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    else instExt.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP, 0, 4, count);
+  }
+
+  // One call per rAF from draw(): advances the starfield, emits the scene,
+  // renders, and composites into the 2D canvas.
+  function frame(now, inWorld) {
+    updateStarfield();
+    updateSway(inWorld, now);
+    count = 0;
+    emitNebulae();
+    emitStars();
+    if (inWorld) emitWorld(now);
+    render();
+    ctx.drawImage(glCanvas, 0, 0);
+  }
+
+  // Project game-space (gx, gy, gz) to canvas pixels for 2D overlays.
+  // Returns {x, y, s} where s = pixels per world unit at that depth.
+  function project(gx, gy, gz) {
+    const u = gx - W/2 - swayX;
+    const v = H/2 - gy;
+    const yc = CT * v + ST * (gz || 0) - swayY;
+    const zc = -ST * v + CT * (gz || 0) - CAM_DIST;
+    const s = FOCAL / -zc;
+    return { x: W/2 + u * s, y: H/2 - yc * s, s };
+  }
+
+  return { active, frame, project, push };
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION: RENDER — GSPLAT 2D OVERLAYS
+   Screen-space chrome that must stay crisp (HP bars, labels, pickup letters)
+   drawn on the 2D canvas at splat-projected positions.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function drawWorldOverlays(ctx) {
+  ctx.save();
+  // Enemy HP bars
+  for (const e of game.enemies) {
+    if (e.dead || e.hp >= e.maxHp || e.hp <= 0) continue;
+    const pr = GSplat.project(e.x, e.y - e.h/2 - 8, 6);
+    const bw = e.w * pr.s, pct = e.hp / e.maxHp;
+    ctx.fillStyle = '#333'; ctx.fillRect(pr.x - bw/2, pr.y, bw, 3.5);
+    ctx.fillStyle = pct > 0.5 ? '#44FF44' : pct > 0.25 ? '#FFAA00' : '#FF4444';
+    ctx.fillRect(pr.x - bw/2, pr.y, bw * pct, 3.5);
+  }
+  // Power-up letters
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const pu of game.powerups) {
+    const pr = GSplat.project(pu.x, pu.y, 8);
+    ctx.fillStyle = '#001133';
+    ctx.font = 'bold ' + Math.max(7, Math.round(9 * pr.s)) + 'px Share Tech Mono';
+    ctx.fillText(PU_LABEL[pu.type] || '?', pr.x, pr.y);
+  }
+  ctx.textBaseline = 'alphabetic';
+  // Wreck labels + revive rings
+  for (const w of game.wrecks) {
+    const pr = GSplat.project(w.x, w.y, 3);
+    ctx.fillStyle = w.color; ctx.font = '9px Orbitron'; ctx.textAlign = 'center';
+    ctx.globalAlpha = Math.min(1, w.life / 60);
+    ctx.fillText('P' + w.pid + ' WRECK', pr.x, pr.y - 18 * pr.s);
+    if (w.reviveProgress > 0) {
+      ctx.strokeStyle = '#FFEEBB'; ctx.lineWidth = 3;
+      ctx.shadowBlur = 16; ctx.shadowColor = '#FFEEBB';
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, 22 * pr.s, -Math.PI/2, -Math.PI/2 + (w.reviveProgress/180) * Math.PI*2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    ctx.globalAlpha = 1;
+  }
+  // Boss HP bar (screen-space, same chrome as classic)
+  if (game.boss && !game.boss.dead) {
+    const bs = game.boss;
+    const bw = W * 0.5, pct = bs.hp / bs.maxHp;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(W/2 - bw/2, 10, bw, 12);
+    ctx.fillStyle = pct > 0.5 ? '#FF4466' : pct > 0.25 ? '#FF8800' : '#FF2200';
+    ctx.fillRect(W/2 - bw/2, 10, bw * pct, 12);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(W/2 - bw/2, 10, bw, 12);
+    ctx.fillStyle = '#FFF'; ctx.font = '8px Share Tech Mono'; ctx.textAlign = 'center';
+    ctx.fillText('BOSS HP', W/2, 20);
+  }
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    SECTION: RENDER — PARTICLES
    Extended from the Phase 1 class: optional trail, gravity, drag, rotation,
    color-over-life, size-over-life, and glow rendering.
    ═══════════════════════════════════════════════════════════════════════════ */
+const parseHexRGB = (h) => (typeof h === 'string' && h[0] === '#' && h.length >= 7)
+  ? [parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255]
+  : [1, 1, 1];
+
 class Particle {
   constructor(x,y,vx,vy,color,life,sz,opts) {
     opts = opts || {};
     this.x=x; this.y=y; this.vx=vx; this.vy=vy;
+    this.z = opts.z || 0; this.vz = opts.vz || 0;   // 3D motion for the splat renderer
     this.color=color; this.life=life; this.maxLife=life; this.sz=sz;
     this.gravity = opts.gravity !== undefined ? opts.gravity : 0.05;
     this.drag    = opts.drag    !== undefined ? opts.drag    : 1.0;
     this.glow    = opts.glow    !== undefined ? opts.glow    : 0;
     this.shape   = opts.shape   || 'circle';                 // 'circle'|'square'|'streak'
     this.colorEnd = opts.colorEnd || null;                   // fade to this color
+    this._rgb    = parseHexRGB(color);
+    this._rgbEnd = this.colorEnd ? parseHexRGB(this.colorEnd) : null;
     this.trail   = opts.trail || 0;                          // # of trail samples
     this.history = this.trail ? [] : null;
   }
@@ -853,6 +1556,7 @@ class Particle {
       if (this.history.length > this.trail * 2) this.history.splice(0, 2);
     }
     this.x += this.vx; this.y += this.vy;
+    this.z += this.vz; this.vz *= this.drag;
     this.vy += this.gravity;
     this.vx *= this.drag; this.vy *= this.drag;
     this.life--;
@@ -905,7 +1609,7 @@ function explode(x,y,color,count=20,speed=3) {
     const ang = rnd(0,Math.PI*2);
     const spd = rnd(0.5,speed);
     particles.push(new Particle(x,y,Math.cos(ang)*spd,Math.sin(ang)*spd,color,rnd(22,44),rnd(1.2,4.2), {
-      glow: 8, drag: 0.96, gravity: 0.04, colorEnd: '#221100',
+      glow: 8, drag: 0.96, gravity: 0.04, colorEnd: '#221100', vz: rnd(-1,1)*spd*0.7,
     }));
   }
   // Add a few fast streak shards
@@ -914,7 +1618,7 @@ function explode(x,y,color,count=20,speed=3) {
     const ang = rnd(0, Math.PI * 2);
     const spd = rnd(speed, speed * 2);
     particles.push(new Particle(x, y, Math.cos(ang)*spd, Math.sin(ang)*spd, color, rnd(10,18), rnd(1.5,3), {
-      shape: 'streak', glow: 10, gravity: 0.0, drag: 0.94,
+      shape: 'streak', glow: 10, gravity: 0.0, drag: 0.94, vz: rnd(-1,1)*spd*0.5,
     }));
   }
 }
@@ -923,14 +1627,14 @@ function sparkle(x,y,color,count=8) {
   for(let i=0;i<n;i++) {
     const ang = rnd(0,Math.PI*2);
     particles.push(new Particle(x,y,Math.cos(ang)*rnd(1,3),Math.sin(ang)*rnd(1,3),color,rnd(10,20),rnd(1,2), {
-      glow: 6, drag: 0.9,
+      glow: 6, drag: 0.9, vz: rnd(-1.5,1.5),
     }));
   }
 }
 function thruster(x, y, color) {
   if (Config.get('reducedMotion')) return;
   particles.push(new Particle(x + rnd(-2,2), y, rnd(-0.3, 0.3), rnd(1.5, 3), color, rnd(10, 18), rnd(1.5, 2.5), {
-    glow: 8, drag: 0.92, gravity: 0, colorEnd: '#221100', trail: 3,
+    glow: 8, drag: 0.92, gravity: 0, colorEnd: '#221100', trail: 3, vz: rnd(-0.4, 0.4),
   }));
 }
 
@@ -2142,6 +2846,7 @@ const OPTIONS_ITEMS = [
   { key: 'volMaster',     label: 'MASTER VOLUME', type: 'slider', min: 0, max: 1, step: 0.05 },
   { key: 'volMusic',      label: 'MUSIC VOLUME',  type: 'slider', min: 0, max: 1, step: 0.05 },
   { key: 'volSfx',        label: 'SFX VOLUME',    type: 'slider', min: 0, max: 1, step: 0.05 },
+  { key: 'renderer',      label: 'RENDERER',      type: 'enum',   values: ['splat3d','classic'] },
   { key: 'crt',           label: 'CRT MODE',      type: 'enum',   values: ['webgl','css','off'] },
   { key: 'shake',         label: 'SCREEN SHAKE',  type: 'slider', min: 0, max: 1, step: 0.1 },
   { key: 'slowMo',        label: 'SLOW-MO',       type: 'bool' },
@@ -2660,7 +3365,13 @@ function draw() {
   ctx.save();
   Camera.preRender(ctx, now);
   ctx.fillStyle='#000005'; ctx.fillRect(0,0,W,H);
-  drawStars();
+  const splat = GSplat.active();
+  const inWorld = game.state===GS.PLAYING || game.state===GS.PAUSED ||
+                  game.state===GS.LEVEL_CLEAR || game.state===GS.GAMEOVER || game.state===GS.VICTORY;
+  // Splat mode renders the whole 3D scene (background + world) in one sorted
+  // pass and composites it here; classic mode keeps the original 2D path.
+  if (splat) GSplat.frame(now, inWorld);
+  else drawStars();
   if(game.state===GS.MENU)       { drawMenu();       ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.MODE)       { drawModeSelect(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.OPTIONS)    { drawOptions();    ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
@@ -2668,13 +3379,17 @@ function draw() {
   if(game.state===GS.HIGHSCORES) { drawHighScores(); ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   if(game.state===GS.NAME_ENTRY) { drawNameEntry();  ctx.restore(); Camera.postRender(ctx, now); CRT.draw(canvas, now); return; }
   // Playing / paused / level clear
-  particles.forEach(p=>p.draw(ctx));
-  game.powerups.forEach(pu=>pu.draw(ctx));
-  game.wrecks.forEach(w => w.draw(ctx));
-  game.enemies.forEach(e=>e.draw(ctx));
-  if(game.boss&&!game.boss.dead) game.boss.draw(ctx);
-  game.bullets.forEach(b=>b.draw(ctx));
-  game.players.forEach(p=>{ if(p.active||p.dying>0||p.respawnTimer>0) p.draw(ctx); });
+  if (splat) {
+    drawWorldOverlays(ctx);
+  } else {
+    particles.forEach(p=>p.draw(ctx));
+    game.powerups.forEach(pu=>pu.draw(ctx));
+    game.wrecks.forEach(w => w.draw(ctx));
+    game.enemies.forEach(e=>e.draw(ctx));
+    if(game.boss&&!game.boss.dead) game.boss.draw(ctx);
+    game.bullets.forEach(b=>b.draw(ctx));
+    game.players.forEach(p=>{ if(p.active||p.dying>0||p.respawnTimer>0) p.draw(ctx); });
+  }
   Confetti.draw(ctx);
   // HUD
   drawHUD();
